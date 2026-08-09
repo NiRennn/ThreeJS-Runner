@@ -1,0 +1,2448 @@
+import * as THREE from "three";
+import { InputController } from "./InputController";
+import type { RunnerHud } from "./types";
+
+type LaneIndex = 0 | 1 | 2;
+
+type ObstacleKind = "low" | "overhead";
+
+type PickupKind = "coin" | "magnet" | "shield";
+
+type TrainKind = "flat" | "ramp";
+
+interface TrainActor {
+  kind: TrainKind;
+
+  /*
+   * Внутри root находятся:
+   * - корпус;
+   * - наклонная поверхность;
+   * - монеты.
+   */
+  root: THREE.Group;
+
+  /*
+   * Общий опасный объём поезда.
+   */
+  box: THREE.Box3;
+
+  roofPickups: PickupActor[];
+}
+
+interface ObstacleActor {
+  kind: ObstacleKind;
+  mesh: THREE.Object3D;
+  box: THREE.Box3;
+  size: THREE.Vector3;
+}
+
+interface PickupActor {
+  kind: PickupKind;
+  mesh: THREE.Object3D;
+  independent: boolean;
+}
+
+interface CoinParticle {
+  mesh: THREE.Mesh;
+  velocity: THREE.Vector3;
+  spin: THREE.Vector3;
+}
+
+interface CoinEffect {
+  group: THREE.Group;
+  particles: CoinParticle[];
+  age: number;
+  maxAge: number;
+}
+
+type HudListener = (hud: RunnerHud) => void;
+
+/*
+ * -------------------------------------------------------
+ * КОНФИГУРАЦИЯ
+ * -------------------------------------------------------
+ */
+
+const LANE_X = [-2.4, 0, 2.4] as const;
+
+const PLAYER_WIDTH = 0.85;
+const PLAYER_DEPTH = 0.75;
+
+const PLAYER_STANDING_HEIGHT = 1.8;
+const PLAYER_SLIDING_HEIGHT = 0.72;
+
+const LANE_CHANGE_SPEED = 14;
+
+const JUMP_VELOCITY = 11.5;
+const FAST_FALL_VELOCITY = -13;
+const GRAVITY = -24;
+
+const SLIDE_DURATION = 0.75;
+
+const WORLD_SPEED = 13;
+
+const TRACK_TILE_LENGTH = 10;
+const TRACK_TILE_COUNT = 18;
+
+const TRAIN_WIDTH = 1.8;
+const TRAIN_HEIGHT = 1.55;
+const TRAIN_LENGTH = 8;
+
+const RAMP_LENGTH = 3.6;
+
+const RAMP_THICKNESS = 0.14;
+
+const MAX_GROUNDED_STEP_UP = 0.55;
+
+const MAX_GROUNDED_STEP_DOWN = 0.55;
+
+const SURFACE_TOLERANCE = 0.12;
+
+const RECYCLE_Z = 16;
+
+/*
+ * Плавное приближение значения к цели.
+ *
+ * В отличие от обычного lerp с фиксированным коэффициентом,
+ * эта версия почти не зависит от частоты кадров.
+ */
+function damp(
+  current: number,
+  target: number,
+  speed: number,
+  delta: number,
+): number {
+  const factor = 1 - Math.exp(-speed * delta);
+
+  return THREE.MathUtils.lerp(current, target, factor);
+}
+
+function shuffle<T>(items: T[]): void {
+  for (let index = items.length - 1; index > 0; index -= 1) {
+    const randomIndex = THREE.MathUtils.randInt(0, index);
+
+    const temporary = items[index];
+
+    items[index] = items[randomIndex];
+    items[randomIndex] = temporary;
+  }
+}
+
+function randomLane(): LaneIndex {
+  return THREE.MathUtils.randInt(0, 2) as LaneIndex;
+}
+
+/*
+ * -------------------------------------------------------
+ * ИГРА
+ * -------------------------------------------------------
+ */
+
+export class RunnerGame {
+  private readonly scene = new THREE.Scene();
+
+  private readonly camera = new THREE.PerspectiveCamera(55, 1, 0.1, 250);
+
+  private readonly renderer: THREE.WebGLRenderer;
+
+  private readonly clock = new THREE.Clock();
+
+  private readonly input = new InputController();
+
+  private readonly resizeObserver: ResizeObserver;
+
+  private readonly playerGroup = new THREE.Group();
+
+  private readonly playerMesh: THREE.Mesh;
+
+  private shieldAuraMesh!: THREE.Mesh;
+
+  private readonly playerBox = new THREE.Box3();
+
+  private readonly cameraTarget = new THREE.Vector3();
+
+  private readonly temporaryWorldPosition = new THREE.Vector3();
+
+  private readonly trackTiles: THREE.Group[] = [];
+
+  private readonly trains: TrainActor[] = [];
+
+  private readonly obstacles: ObstacleActor[] = [];
+
+  private readonly pickups: PickupActor[] = [];
+
+  private readonly coinEffects: CoinEffect[] = [];
+
+  private isGameActive = false;
+
+  private currentLane: LaneIndex = 1;
+
+  private playerX: number = LANE_X[1];
+
+  private readonly container: HTMLDivElement;
+
+  private readonly onHudChange: HudListener;
+
+  /*
+   * feetY — высота ног игрока над землёй.
+   *
+   * Это удобнее, чем хранить позицию центра модели:
+   * feetY = 0 означает, что игрок стоит на земле.
+   * feetY = 2 означает, что игрок стоит на крыше.
+   */
+  private playerFeetY = 0;
+
+  private verticalVelocity = 0;
+
+  private grounded = true;
+
+  private sliding = false;
+
+  private slideRemaining = 0;
+
+  private distance = 0;
+
+  private coins = 0;
+
+  private shieldActive = false;
+
+  private magnetRemaining = 0;
+
+  private hitCooldown = 0;
+
+  private gameOver = false;
+
+  /*
+   * Позиция, за которой будут появляться новые объекты.
+   * Она движется вместе с игровым миром.
+   */
+  private spawnCursorZ = -12;
+
+  private hudUpdateAccumulator = 0;
+
+  private previousHudKey = "";
+
+  constructor(
+    container: HTMLDivElement,
+    onHudChange: HudListener,
+  ) {
+    this.container = container;
+    this.onHudChange = onHudChange;
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+    });
+
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    this.container.appendChild(this.renderer.domElement);
+
+    this.scene.background = new THREE.Color("#132338");
+
+    this.scene.fog = new THREE.Fog("#132338", 30, 130);
+
+    this.createLights();
+    this.createTrack();
+
+    this.playerMesh = this.createPlayer();
+
+    this.createWorldActors();
+
+    this.camera.position.set(0, 5.3, 8.5);
+
+    this.resizeObserver = new ResizeObserver(this.resize);
+
+    this.resizeObserver.observe(this.container);
+
+    this.resize();
+    this.resetToMenu();
+
+    /*
+     * Three.js предоставляет setAnimationLoop
+     * как API для управления циклом рендеринга.
+     */
+    this.renderer.setAnimationLoop(this.animate);
+  }
+
+  dispose(): void {
+    this.renderer.setAnimationLoop(null);
+
+    this.resizeObserver.disconnect();
+    this.input.dispose();
+
+    const geometries = new Set<THREE.BufferGeometry>();
+
+    const materials = new Set<THREE.Material>();
+
+    this.scene.traverse((object) => {
+      if (!(object instanceof THREE.Mesh)) {
+        return;
+      }
+
+      geometries.add(object.geometry);
+
+      const objectMaterials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+
+      objectMaterials.forEach((material) => {
+        materials.add(material);
+      });
+    });
+
+    geometries.forEach((geometry) => {
+      geometry.dispose();
+    });
+
+    materials.forEach((material) => {
+      material.dispose();
+    });
+
+    this.renderer.dispose();
+    this.renderer.domElement.remove();
+  }
+
+  /*
+   * -----------------------------------------------------
+   * СОЗДАНИЕ СЦЕНЫ
+   * -----------------------------------------------------
+   */
+
+  private createLights(): void {
+    const hemisphereLight = new THREE.HemisphereLight(
+      "#b9d8ff",
+      "#142014",
+      2.2,
+    );
+
+    this.scene.add(hemisphereLight);
+
+    const sun = new THREE.DirectionalLight("#ffffff", 3.2);
+
+    sun.position.set(-14, 18, 10);
+    sun.castShadow = true;
+
+    sun.shadow.mapSize.set(2048, 2048);
+
+    sun.shadow.camera.left = -25;
+    sun.shadow.camera.right = 25;
+    sun.shadow.camera.top = 25;
+    sun.shadow.camera.bottom = -12;
+    sun.shadow.camera.near = 0.1;
+    sun.shadow.camera.far = 60;
+
+    this.scene.add(sun);
+  }
+
+  private createTrack(): void {
+    const groundGeometry = new THREE.BoxGeometry(8.6, 0.2, TRACK_TILE_LENGTH);
+
+    const groundMaterial = new THREE.MeshStandardMaterial({
+      color: "#26354a",
+      roughness: 0.92,
+    });
+
+    const sideGrassGeometry = new THREE.BoxGeometry(
+      24,
+      0.18,
+      TRACK_TILE_LENGTH,
+    );
+    const sideGrassMaterial = new THREE.MeshStandardMaterial({
+      color: "#162e1e",
+      roughness: 0.95,
+    });
+
+    const railGeometry = new THREE.BoxGeometry(0.08, 0.08, TRACK_TILE_LENGTH);
+
+    const railMaterial = new THREE.MeshStandardMaterial({
+      color: "#9ca7b5",
+      roughness: 0.45,
+      metalness: 0.75,
+    });
+
+    const sleeperGeometry = new THREE.BoxGeometry(8, 0.05, 0.14);
+
+    const sleeperMaterial = new THREE.MeshStandardMaterial({
+      color: "#463a32",
+      roughness: 1,
+    });
+
+    for (let index = 0; index < TRACK_TILE_COUNT; index += 1) {
+      const tile = new THREE.Group();
+
+      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
+
+      ground.position.y = -0.1;
+      ground.receiveShadow = true;
+
+      tile.add(ground);
+
+      const leftGrass = new THREE.Mesh(sideGrassGeometry, sideGrassMaterial);
+      leftGrass.position.set(-16.3, -0.11, 0);
+      leftGrass.receiveShadow = true;
+      tile.add(leftGrass);
+
+      const rightGrass = new THREE.Mesh(sideGrassGeometry, sideGrassMaterial);
+      rightGrass.position.set(16.3, -0.11, 0);
+      rightGrass.receiveShadow = true;
+      tile.add(rightGrass);
+
+      /*
+       * По две рельсы на каждую дорожку.
+       */
+      const railPositions = [-3, -1.8, -0.6, 0.6, 1.8, 3];
+
+      railPositions.forEach((x) => {
+        const rail = new THREE.Mesh(railGeometry, railMaterial);
+
+        rail.position.set(x, 0.04, 0);
+        rail.castShadow = true;
+        rail.receiveShadow = true;
+
+        tile.add(rail);
+      });
+
+      /*
+       * Поперечные шпалы.
+       */
+      for (let sleeperIndex = 0; sleeperIndex < 10; sleeperIndex += 1) {
+        const sleeper = new THREE.Mesh(sleeperGeometry, sleeperMaterial);
+
+        sleeper.position.set(0, 0.015, -4.5 + sleeperIndex);
+
+        sleeper.receiveShadow = true;
+
+        tile.add(sleeper);
+      }
+
+      /*
+       * Элементы окружения (деревья, домики, фонари, кусты) по бокам дороги.
+       */
+      this.populateTileScenery(tile, index);
+
+      /*
+       * Пушистые 3D-облака в небе над дорогой
+       */
+      if (index % 2 === 0) {
+        const cloudLeft = this.createCloud(index);
+        cloudLeft.position.set(
+          -28 - (index % 4) * 6,
+          22 + (index % 3) * 3,
+          -2,
+        );
+        tile.add(cloudLeft);
+
+        const cloudRight = this.createCloud(index + 5);
+        cloudRight.position.set(
+          28 + (index % 3) * 6,
+          20 + (index % 4) * 3,
+          1,
+        );
+        tile.add(cloudRight);
+      }
+
+      tile.position.z = 5 - index * TRACK_TILE_LENGTH;
+
+      this.trackTiles.push(tile);
+      this.scene.add(tile);
+    }
+  }
+
+  private createCloud(variantSeed: number): THREE.Group {
+    const cloudGroup = new THREE.Group();
+
+    const cloudMat = new THREE.MeshStandardMaterial({
+      color: "#f0f4f8",
+      emissive: "#a0b4c8",
+      emissiveIntensity: 0.35,
+      roughness: 0.95,
+      flatShading: true,
+    });
+
+    const puffCount = 5 + (variantSeed % 3);
+
+    for (let i = 0; i < puffCount; i += 1) {
+      const radius = 1.2 + ((variantSeed + i * 3) % 4) * 0.45;
+      const puffGeo = new THREE.DodecahedronGeometry(radius, 1);
+      const puff = new THREE.Mesh(puffGeo, cloudMat);
+
+      const posX = (i - puffCount / 2) * 1.5 + ((variantSeed * 2 + i) % 3) * 0.3;
+      const posY = Math.sin(i * 1.1) * 0.5;
+      const posZ = Math.cos(i * 1.3) * 0.6;
+
+      puff.position.set(posX, posY, posZ);
+      cloudGroup.add(puff);
+    }
+
+    const scale = 1.2 + (variantSeed % 3) * 0.4;
+    cloudGroup.scale.set(scale, scale * 0.65, scale);
+
+    return cloudGroup;
+  }
+
+  private createTree(variantSeed: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const isPine = variantSeed % 2 === 0;
+
+    if (isPine) {
+      const trunkGeo = new THREE.CylinderGeometry(0.18, 0.32, 1.8, 8);
+      const trunkMat = new THREE.MeshStandardMaterial({
+        color: "#3e2723",
+        roughness: 0.9,
+      });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = 0.9;
+      trunk.castShadow = true;
+      trunk.receiveShadow = true;
+      group.add(trunk);
+
+      const pineGreenPalette = ["#1b4332", "#2d6a4f", "#40916c"];
+      const foliageMat = new THREE.MeshStandardMaterial({
+        color: pineGreenPalette[variantSeed % pineGreenPalette.length],
+        roughness: 0.8,
+        flatShading: true,
+      });
+
+      const cone1 = new THREE.Mesh(
+        new THREE.ConeGeometry(1.25, 1.6, 7),
+        foliageMat,
+      );
+      cone1.position.y = 1.8;
+      cone1.castShadow = true;
+      cone1.receiveShadow = true;
+      group.add(cone1);
+
+      const cone2 = new THREE.Mesh(
+        new THREE.ConeGeometry(0.95, 1.4, 7),
+        foliageMat,
+      );
+      cone2.position.y = 2.5;
+      cone2.castShadow = true;
+      cone2.receiveShadow = true;
+      group.add(cone2);
+
+      const cone3 = new THREE.Mesh(
+        new THREE.ConeGeometry(0.65, 1.1, 7),
+        foliageMat,
+      );
+      cone3.position.y = 3.2;
+      cone3.castShadow = true;
+      cone3.receiveShadow = true;
+      group.add(cone3);
+    } else {
+      const trunkGeo = new THREE.CylinderGeometry(0.22, 0.38, 2.0, 8);
+      const trunkMat = new THREE.MeshStandardMaterial({
+        color: "#4a2c11",
+        roughness: 0.9,
+      });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.y = 1.0;
+      trunk.castShadow = true;
+      trunk.receiveShadow = true;
+      group.add(trunk);
+
+      const decGreenPalette = [
+        "#2e7d32",
+        "#388e3c",
+        "#43a047",
+        "#52b788",
+        "#ff9f1c",
+      ];
+      const foliageMat = new THREE.MeshStandardMaterial({
+        color: decGreenPalette[variantSeed % decGreenPalette.length],
+        roughness: 0.75,
+        flatShading: true,
+      });
+
+      const canopyCenter = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(1.0, 1),
+        foliageMat,
+      );
+      canopyCenter.position.set(0, 2.4, 0);
+      canopyCenter.castShadow = true;
+      canopyCenter.receiveShadow = true;
+      group.add(canopyCenter);
+
+      const canopySide1 = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.7, 1),
+        foliageMat,
+      );
+      canopySide1.position.set(0.45, 2.2, 0.3);
+      canopySide1.castShadow = true;
+      group.add(canopySide1);
+
+      const canopySide2 = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.65, 1),
+        foliageMat,
+      );
+      canopySide2.position.set(-0.4, 2.3, -0.3);
+      canopySide2.castShadow = true;
+      group.add(canopySide2);
+    }
+
+    const scale = 0.85 + (variantSeed % 5) * 0.08;
+    group.scale.set(scale, scale, scale);
+    group.rotation.y = (variantSeed * 1.3) % (Math.PI * 2);
+
+    return group;
+  }
+
+  private createHouse(variantSeed: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const wallColors = [
+      "#f4f1de",
+      "#e07a5f",
+      "#3d405b",
+      "#81b29a",
+      "#f2cc8f",
+      "#d4a373",
+      "#457b9d",
+      "#e29578",
+    ];
+    const roofColors = [
+      "#b71c1c",
+      "#7f4f24",
+      "#2b2d42",
+      "#4e342e",
+      "#1d3557",
+      "#6b705c",
+    ];
+
+    const wallColor = wallColors[variantSeed % wallColors.length];
+    const roofColor = roofColors[(variantSeed + 2) % roofColors.length];
+
+    const width = 2.4 + (variantSeed % 3) * 0.3;
+    const height = 2.2 + ((variantSeed * 3) % 3) * 0.4;
+    const depth = 2.6 + ((variantSeed * 2) % 3) * 0.3;
+
+    const bodyGeo = new THREE.BoxGeometry(width, height, depth);
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: wallColor,
+      roughness: 0.7,
+    });
+    const body = new THREE.Mesh(bodyGeo, bodyMat);
+    body.position.y = height / 2;
+    body.castShadow = true;
+    body.receiveShadow = true;
+    group.add(body);
+
+    const roofHeight = 1.3 + (variantSeed % 2) * 0.3;
+    const roofGeo = new THREE.ConeGeometry(
+      Math.hypot(width, depth) * 0.58,
+      roofHeight,
+      4,
+    );
+    const roofMat = new THREE.MeshStandardMaterial({
+      color: roofColor,
+      roughness: 0.5,
+      flatShading: true,
+    });
+    const roof = new THREE.Mesh(roofGeo, roofMat);
+    roof.position.y = height + roofHeight / 2;
+    roof.rotation.y = Math.PI / 4;
+    roof.castShadow = true;
+    roof.receiveShadow = true;
+    group.add(roof);
+
+    const doorGeo = new THREE.BoxGeometry(0.65, 1.2, 0.1);
+    const doorMat = new THREE.MeshStandardMaterial({
+      color: "#3d2314",
+      roughness: 0.8,
+    });
+    const door = new THREE.Mesh(doorGeo, doorMat);
+    door.position.set(0, 0.6, depth / 2 + 0.02);
+    group.add(door);
+
+    const windowGeo = new THREE.BoxGeometry(0.5, 0.5, 0.08);
+    const windowMat = new THREE.MeshStandardMaterial({
+      color: "#fff3b0",
+      emissive: "#ffd166",
+      emissiveIntensity: 0.6,
+      roughness: 0.3,
+    });
+
+    const winLeft = new THREE.Mesh(windowGeo, windowMat);
+    winLeft.position.set(-width * 0.28, height * 0.65, depth / 2 + 0.02);
+    group.add(winLeft);
+
+    const winRight = new THREE.Mesh(windowGeo, windowMat);
+    winRight.position.set(width * 0.28, height * 0.65, depth / 2 + 0.02);
+    group.add(winRight);
+
+    if (variantSeed % 2 === 0) {
+      const chimneyGeo = new THREE.BoxGeometry(0.4, 1.0, 0.4);
+      const chimneyMat = new THREE.MeshStandardMaterial({
+        color: "#5c3d2e",
+        roughness: 0.8,
+      });
+      const chimney = new THREE.Mesh(chimneyGeo, chimneyMat);
+      chimney.position.set(
+        width * 0.3,
+        height + roofHeight * 0.5,
+        -depth * 0.2,
+      );
+      chimney.castShadow = true;
+      group.add(chimney);
+    }
+
+    return group;
+  }
+
+  private createStreetLamp(): THREE.Group {
+    const group = new THREE.Group();
+
+    const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 3.2, 8);
+    const poleMat = new THREE.MeshStandardMaterial({
+      color: "#2b2d42",
+      roughness: 0.4,
+      metalness: 0.8,
+    });
+    const pole = new THREE.Mesh(poleGeo, poleMat);
+    pole.position.y = 1.6;
+    pole.castShadow = true;
+    group.add(pole);
+
+    const bulbGeo = new THREE.SphereGeometry(0.24, 12, 12);
+    const bulbMat = new THREE.MeshStandardMaterial({
+      color: "#fffae6",
+      emissive: "#ffc107",
+      emissiveIntensity: 1.2,
+      roughness: 0.2,
+    });
+    const bulb = new THREE.Mesh(bulbGeo, bulbMat);
+    bulb.position.y = 3.2;
+    group.add(bulb);
+
+    return group;
+  }
+
+  private createBush(variantSeed: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const bushPalette = ["#2b9348", "#55a630", "#38b000", "#184e77"];
+    const mat = new THREE.MeshStandardMaterial({
+      color: bushPalette[variantSeed % bushPalette.length],
+      roughness: 0.8,
+      flatShading: true,
+    });
+
+    const mainBush = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.65, 1),
+      mat,
+    );
+    mainBush.position.y = 0.4;
+    mainBush.castShadow = true;
+    mainBush.receiveShadow = true;
+    group.add(mainBush);
+
+    const sideBush = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.45, 1),
+      mat,
+    );
+    sideBush.position.set(0.4, 0.3, 0.2);
+    sideBush.castShadow = true;
+    group.add(sideBush);
+
+    return group;
+  }
+
+  private populateTileScenery(tile: THREE.Group, tileIndex: number): void {
+    const leftVariant = tileIndex;
+    const rightVariant = tileIndex + 7;
+
+    // --- LEFT SIDE SCENERY ---
+    if (tileIndex % 3 === 0) {
+      const house = this.createHouse(leftVariant);
+      house.position.set(-11.8, 0, -1.5);
+      house.rotation.y = Math.PI / 2 + 0.1;
+      tile.add(house);
+
+      const tree = this.createTree(leftVariant);
+      tree.position.set(-9.2, 0, 3.2);
+      tile.add(tree);
+
+      const bush = this.createBush(leftVariant);
+      bush.position.set(-7.2, 0, -1.0);
+      tile.add(bush);
+    } else if (tileIndex % 3 === 1) {
+      const tree1 = this.createTree(leftVariant);
+      tree1.position.set(-9.0, 0, -2.8);
+      tile.add(tree1);
+
+      const tree2 = this.createTree(leftVariant + 1);
+      tree2.position.set(-12.5, 0, 2.2);
+      tile.add(tree2);
+
+      const lamp = this.createStreetLamp();
+      lamp.position.set(-6.6, 0, 0);
+      lamp.rotation.y = Math.PI / 2;
+      tile.add(lamp);
+
+      const bush = this.createBush(leftVariant + 2);
+      bush.position.set(-8.0, 0, 3.5);
+      tile.add(bush);
+    } else {
+      const house = this.createHouse(leftVariant + 3);
+      house.position.set(-12.5, 0, 2.0);
+      house.rotation.y = Math.PI / 2 - 0.15;
+      tile.add(house);
+
+      const tree1 = this.createTree(leftVariant + 2);
+      tree1.position.set(-8.8, 0, -3.2);
+      tile.add(tree1);
+
+      const tree2 = this.createTree(leftVariant + 4);
+      tree2.position.set(-14.2, 0, -1.2);
+      tile.add(tree2);
+    }
+
+    // --- RIGHT SIDE SCENERY ---
+    if ((tileIndex + 1) % 3 === 0) {
+      const house = this.createHouse(rightVariant);
+      house.position.set(11.8, 0, 1.5);
+      house.rotation.y = -Math.PI / 2 - 0.1;
+      tile.add(house);
+
+      const tree1 = this.createTree(rightVariant + 1);
+      tree1.position.set(9.2, 0, -2.5);
+      tile.add(tree1);
+
+      const tree2 = this.createTree(rightVariant + 2);
+      tree2.position.set(13.8, 0, 3.8);
+      tile.add(tree2);
+    } else if ((tileIndex + 1) % 3 === 1) {
+      const tree1 = this.createTree(rightVariant);
+      tree1.position.set(10.0, 0, 2.2);
+      tile.add(tree1);
+
+      const tree2 = this.createTree(rightVariant + 1);
+      tree2.position.set(13.0, 0, -2.2);
+      tile.add(tree2);
+
+      const lamp = this.createStreetLamp();
+      lamp.position.set(6.6, 0, 0);
+      lamp.rotation.y = -Math.PI / 2;
+      tile.add(lamp);
+
+      const bush = this.createBush(rightVariant + 3);
+      bush.position.set(7.5, 0, -3.0);
+      tile.add(bush);
+    } else {
+      const house = this.createHouse(rightVariant + 2);
+      house.position.set(12.5, 0, -2.0);
+      house.rotation.y = -Math.PI / 2 + 0.12;
+      tile.add(house);
+
+      const tree1 = this.createTree(rightVariant + 3);
+      tree1.position.set(9.0, 0, 2.6);
+      tile.add(tree1);
+
+      const bush = this.createBush(rightVariant + 4);
+      bush.position.set(7.2, 0, 0.8);
+      tile.add(bush);
+    }
+  }
+
+  private createPlayer(): THREE.Mesh {
+    const bodyGeometry = new THREE.BoxGeometry(1, 1, 1);
+
+    const bodyMaterial = new THREE.MeshStandardMaterial({
+      color: "#50d6ff",
+      roughness: 0.35,
+      metalness: 0.12,
+    });
+
+    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+
+    body.castShadow = true;
+    body.receiveShadow = true;
+
+    this.playerGroup.add(body);
+
+    /*
+     * Светящаяся полупрозрачная аура щита вокруг игрока
+     */
+    const shieldGeo = new THREE.IcosahedronGeometry(1.25, 2);
+    const shieldMat = new THREE.MeshStandardMaterial({
+      color: "#58ef91",
+      emissive: "#00ff88",
+      emissiveIntensity: 0.9,
+      transparent: true,
+      opacity: 0.38,
+      roughness: 0.1,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+    });
+    this.shieldAuraMesh = new THREE.Mesh(shieldGeo, shieldMat);
+    this.shieldAuraMesh.position.y = 0.9;
+    this.shieldAuraMesh.visible = false;
+    this.playerGroup.add(this.shieldAuraMesh);
+
+    this.scene.add(this.playerGroup);
+
+    return body;
+  }
+
+  private createWorldActors(): void {
+    const trainKinds: TrainKind[] = [
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+    ];
+
+    trainKinds.forEach((kind) => {
+      this.trains.push(this.createTrain(kind));
+    });
+
+    // 48 Препятствий (24 низких барьера, 24 лазерных арки подката) для высокого уровня сложности
+    for (let index = 0; index < 24; index += 1) {
+      this.obstacles.push(this.createObstacle("low"));
+      this.obstacles.push(this.createObstacle("overhead"));
+    }
+
+    // 50 Независимых монет на дороге
+    for (let index = 0; index < 50; index += 1) {
+      this.pickups.push(this.createPickup("coin", true));
+    }
+
+    // 5 Магнитов, 5 Щитов
+    for (let index = 0; index < 5; index += 1) {
+      this.pickups.push(this.createPickup("magnet", true));
+      this.pickups.push(this.createPickup("shield", true));
+    }
+  }
+
+  private createTrain(kind: TrainKind): TrainActor {
+    const root = new THREE.Group();
+
+    this.scene.add(root);
+
+    const material = new THREE.MeshStandardMaterial({
+      color: kind === "flat" ? "#d65353" : "#396fd4",
+
+      roughness: 0.48,
+      metalness: 0.28,
+    });
+
+    if (kind === "flat") {
+      /*
+       * Обычный прямоугольный поезд.
+       *
+       * На него нужно запрыгнуть.
+       */
+      const bodyGeometry = new THREE.BoxGeometry(
+        TRAIN_WIDTH,
+        TRAIN_HEIGHT,
+        TRAIN_LENGTH,
+      );
+
+      const body = new THREE.Mesh(bodyGeometry, material);
+
+      body.position.y = TRAIN_HEIGHT / 2;
+
+      body.castShadow = true;
+      body.receiveShadow = true;
+
+      root.add(body);
+    } else {
+      /*
+       * Рамповый поезд состоит из:
+       *
+       * 1. Низкого шасси.
+       * 2. Высокого корпуса.
+       * 3. Наклонной поверхности.
+       */
+
+      const chassisHeight = 0.18;
+
+      const chassisGeometry = new THREE.BoxGeometry(
+        TRAIN_WIDTH,
+        chassisHeight,
+        TRAIN_LENGTH,
+      );
+
+      const chassis = new THREE.Mesh(chassisGeometry, material);
+
+      chassis.position.y = chassisHeight / 2;
+
+      chassis.castShadow = true;
+      chassis.receiveShadow = true;
+
+      root.add(chassis);
+
+      /*
+       * Корпус занимает заднюю часть поезда.
+       *
+       * Передняя часть отдана под наклонную рампу.
+       */
+      const bodyLength = TRAIN_LENGTH - RAMP_LENGTH;
+
+      const bodyGeometry = new THREE.BoxGeometry(
+        TRAIN_WIDTH,
+        TRAIN_HEIGHT,
+        bodyLength,
+      );
+
+      const body = new THREE.Mesh(bodyGeometry, material);
+
+      body.position.set(0, TRAIN_HEIGHT / 2, -RAMP_LENGTH / 2);
+
+      body.castShadow = true;
+      body.receiveShadow = true;
+
+      root.add(body);
+
+      /*
+       * Реальная длина наклонной поверхности
+       * по теореме Пифагора.
+       */
+      const slopeLength = Math.hypot(RAMP_LENGTH, TRAIN_HEIGHT);
+
+      const slopeAngle = Math.atan2(TRAIN_HEIGHT, RAMP_LENGTH);
+
+      const rampGeometry = new THREE.BoxGeometry(
+        TRAIN_WIDTH,
+        RAMP_THICKNESS,
+        slopeLength,
+      );
+
+      const rampMaterial = new THREE.MeshStandardMaterial({
+        color: "#5d91f0",
+        roughness: 0.42,
+        metalness: 0.2,
+      });
+
+      const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
+
+      /*
+       * Рампа идёт:
+       *
+       * спереди поезда: y = 0
+       * назад к корпусу: y = TRAIN_HEIGHT
+       *
+       * Положительный rotation.x поднимает
+       * отрицательную сторону оси Z.
+       */
+      ramp.rotation.x = slopeAngle;
+
+      ramp.position.set(
+        0,
+
+        /*
+         * Компенсируем толщину BoxGeometry,
+         * чтобы верх рампы начинался примерно от y = 0.
+         */
+        TRAIN_HEIGHT / 2 - (RAMP_THICKNESS / 2) * Math.cos(slopeAngle),
+
+        TRAIN_LENGTH / 2 - RAMP_LENGTH / 2,
+      );
+
+      ramp.castShadow = true;
+      ramp.receiveShadow = true;
+
+      root.add(ramp);
+    }
+
+    const train: TrainActor = {
+      kind,
+      root,
+      box: new THREE.Box3(),
+      roofPickups: [],
+    };
+
+    /*
+     * У обычного поезда монеты лежат на крыше.
+     *
+     * У рампового они создают дорожку:
+     * от нижней части рампы к крыше.
+     */
+    const pickupPositions =
+      kind === "flat" ? [2.5, 0, -2.5] : [3.25, 2.2, 1.15, 0.1, -2];
+
+    pickupPositions.forEach((localZ) => {
+      const pickup = this.createPickup("coin", false);
+      pickup.mesh.userData.localZ = localZ;
+
+      const surfaceHeight = this.getLocalTrainSurfaceHeight(kind, localZ);
+
+      pickup.mesh.position.set(
+        0,
+        (surfaceHeight ?? TRAIN_HEIGHT) + 0.55,
+        localZ,
+      );
+
+      root.add(pickup.mesh);
+
+      train.roofPickups.push(pickup);
+      this.pickups.push(pickup);
+    });
+
+    return train;
+  }
+
+  private createObstacle(kind: ObstacleKind): ObstacleActor {
+    const root = new THREE.Group();
+
+    let size: THREE.Vector3;
+
+    if (kind === "low") {
+      size = new THREE.Vector3(1.55, 0.8, 0.65);
+
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: "#ff8c42",
+        roughness: 0.52,
+      });
+
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x, size.y, size.z),
+        bodyMat,
+      );
+      body.castShadow = true;
+      body.receiveShadow = true;
+      root.add(body);
+
+      const footMat = new THREE.MeshStandardMaterial({
+        color: "#3a2518",
+        roughness: 0.8,
+      });
+
+      const footLeft = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.15, size.z + 0.2),
+        footMat,
+      );
+      footLeft.position.set(-size.x / 2 + 0.1, -size.y / 2 + 0.075, 0);
+      root.add(footLeft);
+
+      const footRight = new THREE.Mesh(
+        new THREE.BoxGeometry(0.2, 0.15, size.z + 0.2),
+        footMat,
+      );
+      footRight.position.set(size.x / 2 - 0.1, -size.y / 2 + 0.075, 0);
+      root.add(footRight);
+    } else {
+      /*
+       * Высокая арка для подката с полупрозрачной неоновой лазерной сеткой:
+       * - Просвет снизу: y = 0 до y = 0.92 (подкат проходит свободно).
+       * - Высота силового поля: от y = 0.92 до y = 3.3.
+       * - Полупрозрачный экран (opacity: 0.35) отлично виден игроку (понятно, что перепрыгнуть нельзя),
+       *   но абсолютно НЕ перекрывает обзор дороги и камеры!
+       */
+      size = new THREE.Vector3(1.7, 2.38, 0.35);
+
+      const frameMat = new THREE.MeshStandardMaterial({
+        color: "#2c2a38",
+        roughness: 0.4,
+        metalness: 0.7,
+      });
+
+      const clearanceY = 0.92;
+      const barrierTopY = 3.3;
+      const screenHeight = barrierTopY - clearanceY;
+
+      const upperBeam = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x, 0.16, size.z),
+        frameMat,
+      );
+      upperBeam.position.y = barrierTopY - 0.08;
+      upperBeam.castShadow = true;
+      root.add(upperBeam);
+
+      const lowerBeam = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x, 0.16, size.z),
+        frameMat,
+      );
+      lowerBeam.position.y = clearanceY + 0.08;
+      lowerBeam.castShadow = true;
+      root.add(lowerBeam);
+
+      const screenMat = new THREE.MeshStandardMaterial({
+        color: "#ff0055",
+        emissive: "#ff0055",
+        emissiveIntensity: 0.9,
+        transparent: true,
+        opacity: 0.35,
+        roughness: 0.2,
+      });
+
+      const laserScreen = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x - 0.1, screenHeight - 0.2, 0.08),
+        screenMat,
+      );
+      laserScreen.position.y = clearanceY + screenHeight / 2;
+      root.add(laserScreen);
+
+
+
+      const legGeo = new THREE.BoxGeometry(0.14, barrierTopY, size.z);
+      const legLeft = new THREE.Mesh(legGeo, frameMat);
+      legLeft.position.set(-size.x / 2 + 0.07, barrierTopY / 2, 0);
+      legLeft.castShadow = true;
+      legLeft.receiveShadow = true;
+      root.add(legLeft);
+
+      const legRight = new THREE.Mesh(legGeo, frameMat);
+      legRight.position.set(size.x / 2 - 0.07, barrierTopY / 2, 0);
+      legRight.castShadow = true;
+      legRight.receiveShadow = true;
+      root.add(legRight);
+
+      const lightGeo = new THREE.SphereGeometry(0.14, 10, 10);
+      const lightMat = new THREE.MeshStandardMaterial({
+        color: "#ff0055",
+        emissive: "#ff0055",
+        emissiveIntensity: 1.5,
+      });
+
+      const lightLeft = new THREE.Mesh(lightGeo, lightMat);
+      lightLeft.position.set(-size.x * 0.42, barrierTopY + 0.12, 0);
+      root.add(lightLeft);
+
+      const lightRight = new THREE.Mesh(lightGeo, lightMat);
+      lightRight.position.set(size.x * 0.42, barrierTopY + 0.12, 0);
+      root.add(lightRight);
+    }
+
+    this.scene.add(root);
+
+    return {
+      kind,
+      mesh: root,
+      size,
+      box: new THREE.Box3(),
+    };
+  }
+
+  private createPickup(kind: PickupKind, independent: boolean): PickupActor {
+    const root = new THREE.Group();
+
+    if (kind === "coin") {
+      const geometry = new THREE.CylinderGeometry(0.28, 0.28, 0.08, 20);
+      const material = new THREE.MeshStandardMaterial({
+        color: "#ffd447",
+        emissive: "#6b3e00",
+        emissiveIntensity: 0.8,
+        roughness: 0.3,
+        metalness: 0.5,
+      });
+
+      const coinMesh = new THREE.Mesh(geometry, material);
+      coinMesh.rotation.x = Math.PI / 2;
+      coinMesh.castShadow = true;
+      root.add(coinMesh);
+
+      const ringGeo = new THREE.TorusGeometry(0.28, 0.03, 8, 20);
+      const ringMat = new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        emissive: "#ffe57f",
+        emissiveIntensity: 1.0,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      root.add(ring);
+    } else if (kind === "magnet") {
+      /*
+       * Реалистичный 3D-магнит подкова (красно-серебряный), стоящий дугой вверх (U-образный)
+       */
+      const magnetRedMat = new THREE.MeshStandardMaterial({
+        color: "#e63946",
+        emissive: "#800f2f",
+        emissiveIntensity: 0.5,
+        roughness: 0.3,
+      });
+      const silverMat = new THREE.MeshStandardMaterial({
+        color: "#f1faee",
+        emissive: "#a8dadc",
+        emissiveIntensity: 0.4,
+        roughness: 0.2,
+        metalness: 0.85,
+      });
+
+      // U-образная дуга на вершине (дуга смотрит ВВЕРХ!)
+      const archGeo = new THREE.TorusGeometry(0.3, 0.09, 12, 24, Math.PI);
+      const arch = new THREE.Mesh(archGeo, magnetRedMat);
+      arch.rotation.x = 0; // Не переворачиваем! Дуга смотрит вверх
+      arch.position.y = 0.15;
+      arch.castShadow = true;
+      root.add(arch);
+
+      // Левая ножка идет ВНИЗ от дуги
+      const legGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.28, 12);
+      const legLeft = new THREE.Mesh(legGeo, magnetRedMat);
+      legLeft.position.set(-0.3, -0.01, 0);
+      legLeft.castShadow = true;
+      root.add(legLeft);
+
+      // Серебряный наконечник в самом низу левой ножки
+      const tipLeft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.095, 0.095, 0.14, 12),
+        silverMat,
+      );
+      tipLeft.position.set(-0.3, -0.21, 0);
+      tipLeft.castShadow = true;
+      root.add(tipLeft);
+
+      // Правая ножка идет ВНИЗ от дуги
+      const legRight = new THREE.Mesh(legGeo, magnetRedMat);
+      legRight.position.set(0.3, -0.01, 0);
+      legRight.castShadow = true;
+      root.add(legRight);
+
+      // Серебряный наконечник в самом низу правой ножки
+      const tipRight = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.095, 0.095, 0.14, 12),
+        silverMat,
+      );
+      tipRight.position.set(0.3, -0.21, 0);
+      tipRight.castShadow = true;
+      root.add(tipRight);
+
+      // Легкий наклон магнита в сторону камеры для лучшего обзора
+      root.rotation.x = 0.35;
+    } else {
+      /*
+       * Реалистичный 3D-щит (геральдический щит с эмблемой и серебряным ободком)
+       */
+      const shieldMat = new THREE.MeshStandardMaterial({
+        color: "#58ef91",
+        emissive: "#00ff88",
+        emissiveIntensity: 0.9,
+        roughness: 0.25,
+        metalness: 0.2,
+      });
+      const rimMat = new THREE.MeshStandardMaterial({
+        color: "#f8f9fa",
+        emissive: "#ced4da",
+        emissiveIntensity: 0.4,
+        roughness: 0.2,
+        metalness: 0.85,
+      });
+
+      const plateGeo = new THREE.CylinderGeometry(0.42, 0.18, 0.08, 5);
+      const plate = new THREE.Mesh(plateGeo, shieldMat);
+      plate.rotation.x = Math.PI / 2;
+      plate.rotation.z = Math.PI;
+      plate.castShadow = true;
+      root.add(plate);
+
+      const rimGeo = new THREE.TorusGeometry(0.38, 0.04, 8, 24);
+      const rim = new THREE.Mesh(rimGeo, rimMat);
+      rim.castShadow = true;
+      root.add(rim);
+
+      const emblemMat = new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        emissive: "#ffffff",
+        emissiveIntensity: 1.4,
+      });
+      const emblem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.18, 0),
+        emblemMat,
+      );
+      emblem.position.z = 0.05;
+      root.add(emblem);
+    }
+
+    if (independent) {
+      this.scene.add(root);
+    }
+
+    return {
+      kind,
+      mesh: root,
+      independent,
+    };
+  }
+
+  /*
+   * -----------------------------------------------------
+   * ОСНОВНОЙ ЦИКЛ
+   * -----------------------------------------------------
+   */
+
+  private readonly animate = (): void => {
+    const delta = Math.min(this.clock.getDelta(), 0.05);
+
+    if (!this.isGameActive || this.gameOver) {
+      if (this.gameOver && this.input.consume("restart")) {
+        this.startGame();
+      }
+
+      this.updateCamera(delta);
+    } else {
+      this.update(delta);
+    }
+
+    this.renderer.render(this.scene, this.camera);
+
+    this.input.endFrame();
+  };
+
+  private update(delta: number): void {
+    this.hitCooldown = Math.max(0, this.hitCooldown - delta);
+
+    this.magnetRemaining = Math.max(0, this.magnetRemaining - delta);
+
+    this.distance += WORLD_SPEED * delta;
+
+    this.updateControls(delta);
+    this.updateWorld(delta);
+    this.updateVerticalPhysics(delta);
+    this.updatePlayerVisual(delta);
+
+    this.updatePlayerBox();
+    this.checkPickups();
+    this.checkHazards();
+
+    this.updateCamera(delta);
+
+    this.hudUpdateAccumulator += delta;
+
+    if (this.hudUpdateAccumulator >= 0.1) {
+      this.hudUpdateAccumulator = 0;
+      this.emitHud();
+    }
+  }
+
+  /*
+   * -----------------------------------------------------
+   * УПРАВЛЕНИЕ ИГРОКОМ
+   * -----------------------------------------------------
+   */
+
+  private updateControls(delta: number): void {
+    if (this.input.consume("left")) {
+      this.currentLane = Math.max(0, this.currentLane - 1) as LaneIndex;
+    }
+
+    if (this.input.consume("right")) {
+      this.currentLane = Math.min(2, this.currentLane + 1) as LaneIndex;
+    }
+
+    if (this.input.consume("jump") && this.grounded) {
+      this.grounded = false;
+      this.sliding = false;
+      this.slideRemaining = 0;
+      this.verticalVelocity = JUMP_VELOCITY;
+    }
+
+    if (this.input.consume("slide")) {
+      if (this.grounded) {
+        this.sliding = true;
+        this.slideRemaining = SLIDE_DURATION;
+      } else {
+        /*
+         * Нажатие вниз во время прыжка
+         * ускоряет падение.
+         */
+        this.verticalVelocity = Math.min(
+          this.verticalVelocity,
+          FAST_FALL_VELOCITY,
+        );
+      }
+    }
+
+    if (this.sliding) {
+      this.slideRemaining -= delta;
+
+      if (this.slideRemaining <= 0) {
+        this.sliding = false;
+        this.slideRemaining = 0;
+      }
+    }
+
+    const targetX = LANE_X[this.currentLane];
+
+    this.playerX = damp(this.playerX, targetX, LANE_CHANGE_SPEED, delta);
+  }
+
+  /*
+   * -----------------------------------------------------
+   * ФИЗИКА ПРЫЖКА И ПЛАТФОРМ
+   * -----------------------------------------------------
+   */
+
+  private updateVerticalPhysics(delta: number): void {
+    if (this.grounded) {
+      const supportHeight = this.findCurrentSupportHeight();
+
+      if (supportHeight === null) {
+        /*
+         * Поезд выехал из-под игрока.
+         */
+        this.grounded = false;
+      } else {
+        /*
+         * Подстраиваем высоту ног
+         * под землю, крышу или рампу.
+         */
+        this.playerFeetY = supportHeight;
+
+        this.verticalVelocity = 0;
+      }
+    }
+
+    if (this.grounded) {
+      return;
+    }
+
+    const previousFeetY = this.playerFeetY;
+
+    this.verticalVelocity += GRAVITY * delta;
+
+    const nextFeetY = this.playerFeetY + this.verticalVelocity * delta;
+
+    const landingHeight = this.findLandingHeight(previousFeetY, nextFeetY);
+
+    if (landingHeight !== null) {
+      this.playerFeetY = landingHeight;
+
+      this.verticalVelocity = 0;
+      this.grounded = true;
+
+      return;
+    }
+
+    this.playerFeetY = nextFeetY;
+  }
+
+  /**
+   * Возвращает высоту поверхности поезда
+   * для локальной координаты Z.
+   *
+   * localZ:
+   *
+   * -TRAIN_LENGTH / 2  — зад поезда
+   * +TRAIN_LENGTH / 2  — перед поезда
+   */
+  private getLocalTrainSurfaceHeight(
+    kind: TrainKind,
+    localZ: number,
+  ): number | null {
+    const halfLength = TRAIN_LENGTH / 2;
+
+    if (localZ < -halfLength || localZ > halfLength) {
+      return null;
+    }
+
+    if (kind === "flat") {
+      return TRAIN_HEIGHT;
+    }
+
+    /*
+     * Рампа находится в передней части.
+     */
+    const rampFrontZ = halfLength;
+
+    const rampBackZ = rampFrontZ - RAMP_LENGTH;
+
+    /*
+     * Задняя часть рампового поезда —
+     * обычная плоская крыша.
+     */
+    if (localZ <= rampBackZ) {
+      return TRAIN_HEIGHT;
+    }
+
+    /*
+     * В начале рампы:
+     *
+     * localZ = rampFrontZ
+     * progress = 0
+     * height = 0
+     *
+     * В конце рампы:
+     *
+     * localZ = rampBackZ
+     * progress = 1
+     * height = TRAIN_HEIGHT
+     */
+    const progress = (rampFrontZ - localZ) / RAMP_LENGTH;
+
+    return THREE.MathUtils.clamp(progress, 0, 1) * TRAIN_HEIGHT;
+  }
+
+  private getTrainSurfaceHeight(train: TrainActor): number | null {
+    const deltaX = Math.abs(this.playerX - train.root.position.x);
+
+    /*
+     * Разрешаем допуск по ширине до половины ширины игрока,
+     * чтобы персонаж мог плавно бежать по крыше поезда и переходить
+     * на соседнюю полосу без резких провалов.
+     */
+    if (deltaX > TRAIN_WIDTH / 2 + PLAYER_WIDTH * 0.5) {
+      return null;
+    }
+
+    return this.getTrainLocalSurfaceHeight(train);
+  }
+
+  private getTrainLocalSurfaceHeight(train: TrainActor): number | null {
+    const localZ = -train.root.position.z;
+
+    const halfLength = TRAIN_LENGTH / 2;
+
+    /*
+     * Небольшой допуск нужен, чтобы персонаж
+     * мог мягко заехать на самый край рампы.
+     */
+    const edgeTolerance = PLAYER_DEPTH / 2;
+
+    if (
+      localZ < -halfLength - edgeTolerance ||
+      localZ > halfLength + edgeTolerance
+    ) {
+      return null;
+    }
+
+    const clampedLocalZ = THREE.MathUtils.clamp(
+      localZ,
+      -halfLength,
+      halfLength,
+    );
+
+    return this.getLocalTrainSurfaceHeight(train.kind, clampedLocalZ);
+  }
+
+  private findCurrentSupportHeight(): number | null {
+    const candidates: number[] = [0];
+
+    for (const train of this.trains) {
+      const surfaceHeight = this.getTrainSurfaceHeight(train);
+
+      if (surfaceHeight !== null) {
+        candidates.push(surfaceHeight);
+      }
+    }
+
+    let bestHeight: number | null = null;
+
+    for (const height of candidates) {
+      const stepUp = height - this.playerFeetY;
+
+      const stepDown = this.playerFeetY - height;
+
+      /*
+       * Небольшое изменение высоты разрешено.
+       *
+       * Благодаря этому персонаж поднимается
+       * по рампе.
+       *
+       * Но вертикальный поезд высотой 1.55
+       * нельзя преодолеть как ступеньку.
+       */
+      if (stepUp > MAX_GROUNDED_STEP_UP || stepDown > MAX_GROUNDED_STEP_DOWN) {
+        continue;
+      }
+
+      bestHeight = bestHeight === null ? height : Math.max(bestHeight, height);
+    }
+
+    return bestHeight;
+  }
+
+  private findLandingHeight(
+    previousFeetY: number,
+    nextFeetY: number,
+  ): number | null {
+    /*
+     * Пока игрок летит вверх,
+     * приземления быть не может.
+     */
+    if (this.verticalVelocity > 0) {
+      return null;
+    }
+
+    const candidates: number[] = [0];
+
+    for (const train of this.trains) {
+      const surfaceHeight = this.getTrainSurfaceHeight(train);
+
+      if (surfaceHeight !== null) {
+        candidates.push(surfaceHeight);
+      }
+    }
+
+    let landingHeight: number | null = null;
+
+    for (const height of candidates) {
+      /*
+       * За один кадр ноги пересекли поверхность
+       * сверху вниз.
+       */
+      const crossedSurface = previousFeetY >= height && nextFeetY <= height;
+
+      if (!crossedSurface) {
+        continue;
+      }
+
+      landingHeight =
+        landingHeight === null ? height : Math.max(landingHeight, height);
+    }
+
+    return landingHeight;
+  }
+
+  /*
+   * -----------------------------------------------------
+   * ВИЗУАЛ ИГРОКА
+   * -----------------------------------------------------
+   */
+
+  private updatePlayerVisual(delta = 0.016): void {
+    const height = this.getPlayerHeight();
+
+    this.playerMesh.scale.set(PLAYER_WIDTH, height, PLAYER_DEPTH);
+
+    /*
+     * Модель находится внутри группы.
+     * Группа стоит ногами на playerFeetY,
+     * поэтому центр модели поднимается на половину высоты.
+     */
+    this.playerMesh.position.y = height / 2;
+
+    this.playerMesh.rotation.x = this.sliding ? -0.18 : 0;
+
+    this.playerGroup.position.set(this.playerX, this.playerFeetY, 0);
+
+    /*
+     * Анимация светящейся ауры силового поля щита
+     */
+    this.shieldAuraMesh.visible = this.shieldActive;
+    if (this.shieldActive) {
+      const time = this.clock.getElapsedTime();
+      const pulse = 1 + 0.06 * Math.sin(time * 8);
+      this.shieldAuraMesh.scale.set(pulse, pulse, pulse);
+      this.shieldAuraMesh.rotation.y += 1.8 * delta;
+      this.shieldAuraMesh.rotation.z += 0.8 * delta;
+    }
+  }
+
+  private getPlayerHeight(): number {
+    return this.sliding ? PLAYER_SLIDING_HEIGHT : PLAYER_STANDING_HEIGHT;
+  }
+
+  private updatePlayerBox(): void {
+    const height = this.getPlayerHeight();
+
+    this.playerBox.min.set(
+      this.playerX - PLAYER_WIDTH / 2,
+      this.playerFeetY,
+      -PLAYER_DEPTH / 2,
+    );
+
+    this.playerBox.max.set(
+      this.playerX + PLAYER_WIDTH / 2,
+      this.playerFeetY + height,
+      PLAYER_DEPTH / 2,
+    );
+  }
+
+  /*
+   * -----------------------------------------------------
+   * ДВИЖЕНИЕ МИРА
+   * -----------------------------------------------------
+   */
+
+  private updateWorld(delta: number): void {
+    const movement = WORLD_SPEED * delta;
+
+    this.spawnCursorZ += movement;
+
+    this.updateTrack(movement);
+
+    for (const train of this.trains) {
+      train.root.position.z += movement;
+
+      if (train.root.position.z > RECYCLE_Z) {
+        this.respawnTrain(train);
+      }
+
+      train.roofPickups.forEach((pickup) => {
+        pickup.mesh.rotation.y += 2.8 * delta;
+      });
+    }
+
+    for (const obstacle of this.obstacles) {
+      obstacle.mesh.position.z += movement;
+
+      if (obstacle.mesh.position.z > RECYCLE_Z) {
+        this.respawnObstacle(obstacle);
+      }
+    }
+
+    const playerTargetY = this.playerFeetY + this.getPlayerHeight() * 0.55;
+
+    for (const pickup of this.pickups) {
+      pickup.mesh.rotation.y += 2.8 * delta;
+
+      /*
+       * Эффект магнита: монеты притягиваются и летят прямо к игроку
+       */
+      if (
+        pickup.kind === "coin" &&
+        this.magnetRemaining > 0 &&
+        pickup.mesh.visible
+      ) {
+        pickup.mesh.getWorldPosition(this.temporaryWorldPosition);
+
+        const deltaX = this.playerX - this.temporaryWorldPosition.x;
+        const deltaY = playerTargetY - this.temporaryWorldPosition.y;
+        const deltaZ = 0 - this.temporaryWorldPosition.z;
+
+        const distanceSquared =
+          deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+        if (distanceSquared < 144) {
+          if (!pickup.independent) {
+            this.scene.add(pickup.mesh);
+            pickup.mesh.position.copy(this.temporaryWorldPosition);
+            pickup.independent = true;
+          }
+
+          const distance = Math.sqrt(distanceSquared);
+          const pullSpeed = Math.max(22, 38 - distance * 1.2);
+          const step = Math.min(distance, pullSpeed * delta);
+
+          const dirX = deltaX / distance;
+          const dirY = deltaY / distance;
+          const dirZ = deltaZ / distance;
+
+          pickup.mesh.position.x += dirX * step;
+          pickup.mesh.position.y += dirY * step;
+          pickup.mesh.position.z += dirZ * step;
+
+          pickup.mesh.rotation.y += 8 * delta;
+          pickup.mesh.rotation.z += 6 * delta;
+
+          continue;
+        }
+      }
+
+      if (!pickup.independent) {
+        continue;
+      }
+
+      pickup.mesh.position.z += movement;
+
+      if (pickup.mesh.position.z > RECYCLE_Z) {
+        this.respawnPickup(pickup);
+      }
+    }
+
+    this.updateCoinEffects(delta);
+  }
+
+  private triggerCoinPickupFX(x: number, y: number, z: number): void {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+
+    // Разлетающиеся звёздочки и искры
+    const particleMat = new THREE.MeshStandardMaterial({
+      color: "#ffd700",
+      emissive: "#ffae00",
+      emissiveIntensity: 1.4,
+      roughness: 0.2,
+    });
+
+    const particles: CoinParticle[] = [];
+    const particleCount = 10;
+
+    for (let i = 0; i < particleCount; i += 1) {
+      const isStar = i % 2 === 0;
+      const geo = isStar
+        ? new THREE.OctahedronGeometry(0.09 + Math.random() * 0.04, 0)
+        : new THREE.BoxGeometry(0.08, 0.08, 0.08);
+
+      const pMesh = new THREE.Mesh(geo, particleMat);
+      pMesh.castShadow = false;
+      group.add(pMesh);
+
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+      const speed = 4.0 + Math.random() * 5.0;
+
+      const vx = Math.cos(theta) * Math.cos(phi) * speed;
+      const vy = Math.sin(phi) * speed + 2.5;
+      const vz = Math.sin(theta) * Math.cos(phi) * speed;
+
+      particles.push({
+        mesh: pMesh,
+        velocity: new THREE.Vector3(vx, vy, vz),
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 12,
+          (Math.random() - 0.5) * 12,
+          (Math.random() - 0.5) * 12,
+        ),
+      });
+    }
+
+    this.scene.add(group);
+
+    this.coinEffects.push({
+      group,
+      particles,
+      age: 0,
+      maxAge: 0.45,
+    });
+  }
+
+  private updateCoinEffects(delta: number): void {
+    for (let i = this.coinEffects.length - 1; i >= 0; i -= 1) {
+      const effect = this.coinEffects[i];
+      effect.age += delta;
+
+      const progress = effect.age / effect.maxAge;
+
+      if (progress >= 1.0) {
+        this.scene.remove(effect.group);
+        this.coinEffects.splice(i, 1);
+        continue;
+      }
+
+      for (const p of effect.particles) {
+        p.mesh.position.addScaledVector(p.velocity, delta);
+        p.velocity.y -= 9.8 * delta;
+
+        p.mesh.rotation.x += p.spin.x * delta;
+        p.mesh.rotation.y += p.spin.y * delta;
+
+        const pScale = Math.max(0, 1.0 - progress * 1.1);
+        p.mesh.scale.setScalar(pScale);
+      }
+    }
+  }
+
+  private updateTrack(movement: number): void {
+    const totalLength = TRACK_TILE_COUNT * TRACK_TILE_LENGTH;
+
+    for (const tile of this.trackTiles) {
+      tile.position.z += movement;
+
+      if (tile.position.z > 15) {
+        tile.position.z -= totalLength;
+      }
+    }
+  }
+
+  /*
+   * -----------------------------------------------------
+   * БОНУСЫ
+   * -----------------------------------------------------
+   */
+
+  private checkPickups(): void {
+    const playerCenterY = this.playerFeetY + this.getPlayerHeight() * 0.55;
+
+    for (const pickup of this.pickups) {
+      if (!pickup.mesh.visible) {
+        continue;
+      }
+
+      pickup.mesh.getWorldPosition(this.temporaryWorldPosition);
+
+      const deltaX = this.temporaryWorldPosition.x - this.playerX;
+
+      const deltaY = this.temporaryWorldPosition.y - playerCenterY;
+
+      const deltaZ = this.temporaryWorldPosition.z;
+
+      const distanceSquared =
+        deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
+
+      const threshold = pickup.kind === "coin" ? 0.95 : 0.85;
+
+      if (distanceSquared < threshold) {
+        this.collectPickup(pickup);
+      }
+    }
+  }
+
+  private collectPickup(pickup: PickupActor): void {
+    if (pickup.kind === "coin") {
+      this.coins += 1;
+
+      pickup.mesh.getWorldPosition(this.temporaryWorldPosition);
+      this.triggerCoinPickupFX(
+        this.temporaryWorldPosition.x,
+        this.temporaryWorldPosition.y,
+        this.temporaryWorldPosition.z,
+      );
+    }
+
+    if (pickup.kind === "magnet") {
+      this.magnetRemaining = 6;
+    }
+
+    if (pickup.kind === "shield") {
+      this.shieldActive = true;
+    }
+
+    pickup.mesh.visible = false;
+
+    /*
+     * Обычный бонус сразу перемещается далеко вперёд.
+     * Монета на крыше остаётся скрытой до переиспользования
+     * самого поезда.
+     */
+    if (pickup.independent) {
+      this.respawnPickup(pickup);
+    }
+
+    this.emitHud(true);
+  }
+
+  /*
+   * -----------------------------------------------------
+   * СТОЛКНОВЕНИЯ
+   * -----------------------------------------------------
+   */
+
+  private checkHazards(): void {
+    if (this.hitCooldown > 0 || this.gameOver) {
+      return;
+    }
+
+    for (const obstacle of this.obstacles) {
+      this.updateObstacleBox(obstacle);
+
+      if (!this.playerBox.intersectsBox(obstacle.box)) {
+        continue;
+      }
+
+      const survived = this.handleCollision();
+
+      if (survived) {
+        this.respawnObstacle(obstacle);
+      }
+
+      return;
+    }
+
+    for (const train of this.trains) {
+      this.updateTrainBox(train);
+
+      if (!this.playerBox.intersectsBox(train.box)) {
+        continue;
+      }
+
+      const localSurfaceHeight = this.getTrainLocalSurfaceHeight(train);
+
+      /*
+       * Игрок безопасен, когда его ноги находятся
+       * на уровне поверхности поезда или выше (бежит по крыше,
+       * съезжает с поезда или меняет полосу).
+       */
+      const isAboveOrAtSurface =
+        localSurfaceHeight !== null &&
+        this.playerFeetY >= localSurfaceHeight - SURFACE_TOLERANCE;
+
+      if (isAboveOrAtSurface) {
+        continue;
+      }
+
+      /*
+       * Поверхность выше ног игрока —
+       * значит он ударился в боковую часть.
+       */
+      const survived = this.handleCollision();
+
+      if (survived) {
+        this.respawnTrain(train);
+      }
+
+      return;
+    }
+  }
+
+  private handleCollision(): boolean {
+    if (this.shieldActive) {
+      this.shieldActive = false;
+      this.hitCooldown = 1;
+
+      this.emitHud(true);
+
+      return true;
+    }
+
+    this.gameOver = true;
+    this.emitHud(true);
+
+    return false;
+  }
+
+  private updateObstacleBox(obstacle: ObstacleActor): void {
+    const position = obstacle.mesh.position;
+
+    if (obstacle.kind === "overhead") {
+      /*
+       * Для арки подката:
+       * - Просвет снизу: от y = 0 до y = 0.92 (проходим подкатом).
+       * - Высота зоны коллизии: от y = 0.92 до y = 15.0.
+       * Никакой прыжок не может перелететь этот барьер,
+       * а визуальная модель остается тонкой и не закрывает обзор камеры.
+       */
+      obstacle.box.min.set(
+        position.x - obstacle.size.x / 2,
+        0.92,
+        position.z - obstacle.size.z / 2,
+      );
+
+      obstacle.box.max.set(
+        position.x + obstacle.size.x / 2,
+        15.0,
+        position.z + obstacle.size.z / 2,
+      );
+    } else {
+      obstacle.box.min.set(
+        position.x - obstacle.size.x / 2,
+        position.y - obstacle.size.y / 2,
+        position.z - obstacle.size.z / 2,
+      );
+
+      obstacle.box.max.set(
+        position.x + obstacle.size.x / 2,
+        position.y + obstacle.size.y / 2,
+        position.z + obstacle.size.z / 2,
+      );
+    }
+  }
+
+  private updateTrainBox(train: TrainActor): void {
+    const position = train.root.position;
+
+    train.box.min.set(
+      position.x - TRAIN_WIDTH / 2,
+      position.y,
+      position.z - TRAIN_LENGTH / 2,
+    );
+
+    train.box.max.set(
+      position.x + TRAIN_WIDTH / 2,
+      position.y + TRAIN_HEIGHT,
+      position.z + TRAIN_LENGTH / 2,
+    );
+  }
+
+  /*
+   * -----------------------------------------------------
+   * ГЕНЕРАЦИЯ И ПЕРЕИСПОЛЬЗОВАНИЕ
+   * -----------------------------------------------------
+   */
+
+  private allocateSpawnZ(minimumGap: number, maximumGap: number): number {
+    this.spawnCursorZ -= THREE.MathUtils.randFloat(minimumGap, maximumGap);
+
+    return this.spawnCursorZ;
+  }
+
+  private respawnTrain(train: TrainActor): void {
+    let attempts = 0;
+    let selectedLane = randomLane();
+    let candidateZ = this.spawnCursorZ;
+    let valid = false;
+
+    while (attempts < 20 && !valid) {
+      attempts += 1;
+      selectedLane = randomLane();
+      candidateZ = this.spawnCursorZ - THREE.MathUtils.randFloat(9.0, 15.0);
+      valid = true;
+
+      const laneX = LANE_X[selectedLane];
+
+      // Проверка перекрытия с другими поездами на той же полосе
+      for (const other of this.trains) {
+        if (other === train || !other.root.visible) continue;
+        if (Math.abs(other.root.position.x - laneX) < 0.5) {
+          const distZ = Math.abs(other.root.position.z - candidateZ);
+          if (distZ < TRAIN_LENGTH + 6.0) {
+            valid = false;
+            break;
+          }
+        }
+      }
+    }
+
+    this.spawnCursorZ = Math.min(this.spawnCursorZ, candidateZ);
+
+    train.root.position.set(
+      LANE_X[selectedLane],
+      0,
+      candidateZ,
+    );
+
+    train.roofPickups.forEach((pickup) => {
+      if (pickup.mesh.parent !== train.root) {
+        train.root.add(pickup.mesh);
+        pickup.independent = false;
+
+        const localZ = (pickup.mesh.userData.localZ as number | undefined) ?? 0;
+        const surfaceHeight =
+          this.getLocalTrainSurfaceHeight(train.kind, localZ) ?? TRAIN_HEIGHT;
+
+        pickup.mesh.position.set(0, surfaceHeight + 0.55, localZ);
+        pickup.mesh.rotation.set(Math.PI / 2, 0, 0);
+      }
+
+      pickup.mesh.visible = true;
+    });
+  }
+
+  private respawnObstacle(obstacle: ObstacleActor): void {
+    const positionY = obstacle.kind === "low" ? obstacle.size.y / 2 : 0;
+
+    let attempts = 0;
+    let selectedLane = randomLane();
+    let candidateZ = this.spawnCursorZ;
+    let valid = false;
+
+    while (attempts < 20 && !valid) {
+      attempts += 1;
+      selectedLane = randomLane();
+      candidateZ = this.spawnCursorZ - THREE.MathUtils.randFloat(3.5, 6.5);
+      valid = true;
+
+      const laneX = LANE_X[selectedLane];
+
+      // 1. Проверка минимальной дистанции (7.5м) от других препятствий на той же полосе
+      for (const other of this.obstacles) {
+        if (other === obstacle || !other.mesh.visible) continue;
+        if (Math.abs(other.mesh.position.x - laneX) < 0.5) {
+          const distanceZ = Math.abs(other.mesh.position.z - candidateZ);
+          if (distanceZ < 7.5) {
+            valid = false;
+            break;
+          }
+        }
+      }
+
+      if (!valid) continue;
+
+      // 2. Исключение спавна препятствий внутри поезда на той же полосе
+      for (const train of this.trains) {
+        if (!train.root.visible) continue;
+        if (Math.abs(train.root.position.x - laneX) < 0.5) {
+          const trainFrontZ = train.root.position.z + TRAIN_LENGTH / 2 + 3.5;
+          const trainBackZ = train.root.position.z - TRAIN_LENGTH / 2 - 3.5;
+          if (candidateZ >= trainBackZ && candidateZ <= trainFrontZ) {
+            valid = false;
+            break;
+          }
+        }
+      }
+    }
+
+    this.spawnCursorZ = Math.min(this.spawnCursorZ, candidateZ);
+
+    obstacle.mesh.position.set(
+      LANE_X[selectedLane],
+      positionY,
+      candidateZ,
+    );
+
+    obstacle.mesh.visible = true;
+  }
+
+  private respawnPickup(pickup: PickupActor): void {
+    if (!pickup.independent) {
+      return;
+    }
+
+    const lane = randomLane();
+
+    const height = pickup.kind === "coin" ? 1 : 1.15;
+
+    const gap =
+      pickup.kind === "coin"
+        ? {
+            minimum: 2.5,
+            maximum: 6,
+          }
+        : {
+            minimum: 12,
+            maximum: 22,
+          };
+
+    pickup.mesh.position.set(
+      LANE_X[lane],
+      height,
+      this.allocateSpawnZ(gap.minimum, gap.maximum),
+    );
+
+    pickup.mesh.visible = true;
+  }
+
+  private resetWorldActors(): void {
+    this.spawnCursorZ = -12;
+
+    /*
+     * Перемешиваем порядок появления поездов,
+     * препятствий и бонусов.
+     */
+    const respawnTasks: Array<() => void> = [
+      ...this.trains.map((train) => () => {
+        this.respawnTrain(train);
+      }),
+
+      ...this.obstacles.map((obstacle) => () => {
+        this.respawnObstacle(obstacle);
+      }),
+
+      ...this.pickups
+        .filter((pickup) => pickup.independent)
+        .map((pickup) => () => {
+          this.respawnPickup(pickup);
+        }),
+    ];
+
+    shuffle(respawnTasks);
+
+    respawnTasks.forEach((task) => {
+      task();
+    });
+  }
+
+  /*
+   * -----------------------------------------------------
+   * КАМЕРА
+   * -----------------------------------------------------
+   */
+
+  private updateCamera(delta: number): void {
+    this.camera.position.x = damp(
+      this.camera.position.x,
+      this.playerX * 0.3,
+      4,
+      delta,
+    );
+
+    this.camera.position.y = damp(
+      this.camera.position.y,
+      5.3 + this.playerFeetY * 0.15,
+      4,
+      delta,
+    );
+
+    this.cameraTarget.set(
+      this.playerX * 0.18,
+      1.3 + this.playerFeetY * 0.2,
+      -8,
+    );
+
+    this.camera.lookAt(this.cameraTarget);
+  }
+
+  /*
+   * -----------------------------------------------------
+   * СОСТОЯНИЕ ИГРЫ
+   * -----------------------------------------------------
+   */
+
+  private reset(): void {
+    this.input.reset();
+
+    this.currentLane = 1;
+    this.playerX = LANE_X[1];
+
+    this.playerFeetY = 0;
+    this.verticalVelocity = 0;
+    this.grounded = true;
+
+    this.sliding = false;
+    this.slideRemaining = 0;
+
+    this.distance = 0;
+    this.coins = 0;
+
+    this.shieldActive = false;
+    this.magnetRemaining = 0;
+    this.hitCooldown = 0;
+
+    this.gameOver = false;
+
+    this.trackTiles.forEach((tile, index) => {
+      tile.position.z = 5 - index * TRACK_TILE_LENGTH;
+    });
+
+    this.resetWorldActors();
+    this.updatePlayerVisual();
+
+    this.clock.start();
+
+    this.previousHudKey = "";
+    this.emitHud(true);
+  }
+
+  private emitHud(force = false): void {
+    const hud: RunnerHud = {
+      score: Math.floor(this.distance) + this.coins * 100,
+
+      coins: this.coins,
+
+      shield: this.shieldActive,
+
+      magnetSeconds: Math.ceil(this.magnetRemaining),
+
+      gameOver: this.gameOver,
+    };
+
+    const hudKey = JSON.stringify(hud);
+
+    if (!force && hudKey === this.previousHudKey) {
+      return;
+    }
+
+    this.previousHudKey = hudKey;
+    this.onHudChange(hud);
+  }
+
+  /*
+   * -----------------------------------------------------
+   * RESIZE
+   * -----------------------------------------------------
+   */
+
+  public startGame(): void {
+    this.isGameActive = true;
+    this.reset();
+  }
+
+  public restartGame(): void {
+    this.startGame();
+  }
+
+  public resetToMenu(): void {
+    this.isGameActive = false;
+    this.reset();
+  }
+
+  private readonly resize = (): void => {
+    const width = this.container.clientWidth;
+
+    const height = this.container.clientHeight;
+
+    if (width === 0 || height === 0) {
+      return;
+    }
+
+    this.camera.aspect = width / height;
+    this.camera.updateProjectionMatrix();
+
+    this.renderer.setSize(width, height, false);
+  };
+}
