@@ -73,9 +73,9 @@ const PLAYER_SLIDING_HEIGHT = 0.72;
 
 const LANE_CHANGE_SPEED = 14;
 
-const JUMP_VELOCITY = 11.5;
-const FAST_FALL_VELOCITY = -13;
-const GRAVITY = -24;
+const JUMP_VELOCITY = 15.5;
+const FAST_FALL_VELOCITY = -24;
+const GRAVITY = -44;
 
 const SLIDE_DURATION = 0.75;
 
@@ -154,6 +154,12 @@ export class RunnerGame {
   private readonly playerGroup = new THREE.Group();
 
   private readonly playerMesh: THREE.Mesh;
+
+  private humanoidGroup!: THREE.Group;
+  private leftArmGroup!: THREE.Group;
+  private rightArmGroup!: THREE.Group;
+  private leftLegGroup!: THREE.Group;
+  private rightLegGroup!: THREE.Group;
 
   private shieldAuraMesh!: THREE.Mesh;
 
@@ -364,7 +370,7 @@ export class RunnerGame {
       metalness: 0.75,
     });
 
-    const sleeperGeometry = new THREE.BoxGeometry(8, 0.05, 0.14);
+    const sleeperGeometry = new THREE.BoxGeometry(1.65, 0.05, 0.15);
 
     const sleeperMaterial = new THREE.MeshStandardMaterial({
       color: "#463a32",
@@ -407,17 +413,19 @@ export class RunnerGame {
       });
 
       /*
-       * Поперечные шпалы.
+       * Индивидуальные деревянные шпалы для каждой из 3-х ж/д путей
        */
-      for (let sleeperIndex = 0; sleeperIndex < 10; sleeperIndex += 1) {
-        const sleeper = new THREE.Mesh(sleeperGeometry, sleeperMaterial);
+      LANE_X.forEach((laneX) => {
+        for (let sleeperIndex = 0; sleeperIndex < 10; sleeperIndex += 1) {
+          const sleeper = new THREE.Mesh(sleeperGeometry, sleeperMaterial);
 
-        sleeper.position.set(0, 0.015, -4.5 + sleeperIndex);
+          sleeper.position.set(laneX, 0.015, -4.5 + sleeperIndex);
 
-        sleeper.receiveShadow = true;
+          sleeper.receiveShadow = true;
 
-        tile.add(sleeper);
-      }
+          tile.add(sleeper);
+        }
+      });
 
       /*
        * Элементы окружения (деревья, домики, фонари, кусты) по бокам дороги.
@@ -850,19 +858,233 @@ export class RunnerGame {
   }
 
   private createPlayer(): THREE.Mesh {
-    const bodyGeometry = new THREE.BoxGeometry(1, 1, 1);
+    this.humanoidGroup = new THREE.Group();
 
-    const bodyMaterial = new THREE.MeshStandardMaterial({
-      color: "#50d6ff",
-      roughness: 0.35,
-      metalness: 0.12,
+    const skinMat = new THREE.MeshStandardMaterial({
+      color: "#ffdbac",
+      roughness: 0.6,
     });
 
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
+    const hairMat = new THREE.MeshStandardMaterial({
+      color: "#2c1a11",
+      roughness: 0.7,
+    });
 
-    body.castShadow = true;
-    body.receiveShadow = true;
+    const visorMat = new THREE.MeshStandardMaterial({
+      color: "#00f5d4",
+      emissive: "#00f5d4",
+      emissiveIntensity: 1.2,
+      roughness: 0.1,
+    });
 
+    const hoodieMat = new THREE.MeshStandardMaterial({
+      color: "#ff5722",
+      roughness: 0.45,
+      metalness: 0.1,
+    });
+
+    const zipperMat = new THREE.MeshStandardMaterial({
+      color: "#f8f9fa",
+      metalness: 0.9,
+      roughness: 0.2,
+    });
+
+    const pantsMat = new THREE.MeshStandardMaterial({
+      color: "#1b263b",
+      roughness: 0.5,
+    });
+
+    const shoeMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      roughness: 0.3,
+    });
+
+    const soleMat = new THREE.MeshStandardMaterial({
+      color: "#ff5722",
+      roughness: 0.4,
+    });
+
+    const backpackMat = new THREE.MeshStandardMaterial({
+      color: "#0d1b2a",
+      roughness: 0.4,
+      metalness: 0.6,
+    });
+
+    const gloveMat = new THREE.MeshStandardMaterial({
+      color: "#212529",
+      roughness: 0.5,
+    });
+
+    // --- ТОРС И КУРТКА-ХУДИ ---
+    const torsoMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.52, 0.62, 0.32),
+      hoodieMat,
+    );
+    torsoMesh.position.y = 1.15;
+    torsoMesh.castShadow = true;
+    this.humanoidGroup.add(torsoMesh);
+
+    const zipper = new THREE.Mesh(
+      new THREE.BoxGeometry(0.04, 0.6, 0.04),
+      zipperMat,
+    );
+    zipper.position.set(0, 1.15, 0.15);
+    this.humanoidGroup.add(zipper);
+
+    const backpack = new THREE.Mesh(
+      new THREE.BoxGeometry(0.36, 0.42, 0.18),
+      backpackMat,
+    );
+    backpack.position.set(0, 1.18, -0.21);
+    backpack.castShadow = true;
+    this.humanoidGroup.add(backpack);
+
+    const batteryLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 0.06, 0.04),
+      new THREE.MeshStandardMaterial({
+        color: "#00ff88",
+        emissive: "#00ff88",
+        emissiveIntensity: 1.5,
+      }),
+    );
+    batteryLight.position.set(0, 1.3, -0.31);
+    this.humanoidGroup.add(batteryLight);
+
+    // --- ГОЛОВА И ПРИЧЕСКА ---
+    const headMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.36, 0.36, 0.34),
+      skinMat,
+    );
+    headMesh.position.y = 1.62;
+    headMesh.castShadow = true;
+    this.humanoidGroup.add(headMesh);
+
+    const hairMesh = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.14, 0.36),
+      hairMat,
+    );
+    hairMesh.position.set(0, 1.76, -0.01);
+    this.humanoidGroup.add(hairMesh);
+
+    const bangs = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.08, 0.12),
+      hairMat,
+    );
+    bangs.position.set(0, 1.72, 0.14);
+    this.humanoidGroup.add(bangs);
+
+    const visor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.09, 0.08),
+      visorMat,
+    );
+    visor.position.set(0, 1.63, 0.15);
+    this.humanoidGroup.add(visor);
+
+    // --- РУКИ (С ГИБКИМИ ПЛЕЧЕВЫМИ СУСТАВАМИ) ---
+    this.leftArmGroup = new THREE.Group();
+    this.leftArmGroup.position.set(-0.33, 1.38, 0);
+
+    const leftSleeve = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.44, 0.14),
+      hoodieMat,
+    );
+    leftSleeve.position.y = -0.22;
+    leftSleeve.castShadow = true;
+    this.leftArmGroup.add(leftSleeve);
+
+    const leftHand = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 10, 10),
+      gloveMat,
+    );
+    leftHand.position.y = -0.46;
+    this.leftArmGroup.add(leftHand);
+
+    this.humanoidGroup.add(this.leftArmGroup);
+
+    this.rightArmGroup = new THREE.Group();
+    this.rightArmGroup.position.set(0.33, 1.38, 0);
+
+    const rightSleeve = new THREE.Mesh(
+      new THREE.BoxGeometry(0.14, 0.44, 0.14),
+      hoodieMat,
+    );
+    rightSleeve.position.y = -0.22;
+    rightSleeve.castShadow = true;
+    this.rightArmGroup.add(rightSleeve);
+
+    const rightHand = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 10, 10),
+      gloveMat,
+    );
+    rightHand.position.y = -0.46;
+    this.rightArmGroup.add(rightHand);
+
+    this.humanoidGroup.add(this.rightArmGroup);
+
+    // --- НОГИ И КРОССОВКИ ---
+    this.leftLegGroup = new THREE.Group();
+    this.leftLegGroup.position.set(-0.15, 0.82, 0);
+
+    const leftPant = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.62, 0.18),
+      pantsMat,
+    );
+    leftPant.position.y = -0.31;
+    leftPant.castShadow = true;
+    this.leftLegGroup.add(leftPant);
+
+    const leftShoe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 0.14, 0.32),
+      shoeMat,
+    );
+    leftShoe.position.set(0, -0.65, 0.05);
+    leftShoe.castShadow = true;
+    this.leftLegGroup.add(leftShoe);
+
+    const leftSole = new THREE.Mesh(
+      new THREE.BoxGeometry(0.21, 0.05, 0.33),
+      soleMat,
+    );
+    leftSole.position.set(0, -0.73, 0.05);
+    this.leftLegGroup.add(leftSole);
+
+    this.humanoidGroup.add(this.leftLegGroup);
+
+    this.rightLegGroup = new THREE.Group();
+    this.rightLegGroup.position.set(0.15, 0.82, 0);
+
+    const rightPant = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.62, 0.18),
+      pantsMat,
+    );
+    rightPant.position.y = -0.31;
+    rightPant.castShadow = true;
+    this.rightLegGroup.add(rightPant);
+
+    const rightShoe = new THREE.Mesh(
+      new THREE.BoxGeometry(0.2, 0.14, 0.32),
+      shoeMat,
+    );
+    rightShoe.position.set(0, -0.65, 0.05);
+    rightShoe.castShadow = true;
+    this.rightLegGroup.add(rightShoe);
+
+    const rightSole = new THREE.Mesh(
+      new THREE.BoxGeometry(0.21, 0.05, 0.33),
+      soleMat,
+    );
+    rightSole.position.set(0, -0.73, 0.05);
+    this.rightLegGroup.add(rightSole);
+
+    this.humanoidGroup.add(this.rightLegGroup);
+
+    this.playerGroup.add(this.humanoidGroup);
+
+    // Невидимый хитбокс для коллизий
+    const hitGeometry = new THREE.BoxGeometry(PLAYER_WIDTH, PLAYER_STANDING_HEIGHT, PLAYER_DEPTH);
+    const hitMaterial = new THREE.MeshBasicMaterial({ visible: false });
+    const body = new THREE.Mesh(hitGeometry, hitMaterial);
+    body.position.y = PLAYER_STANDING_HEIGHT / 2;
     this.playerGroup.add(body);
 
     /*
@@ -934,130 +1156,197 @@ export class RunnerGame {
 
     this.scene.add(root);
 
-    const material = new THREE.MeshStandardMaterial({
-      color: kind === "flat" ? "#d65353" : "#396fd4",
+    const bodyColor = kind === "flat" ? "#d90429" : "#0077b6";
 
-      roughness: 0.48,
-      metalness: 0.28,
+    const bodyMat = new THREE.MeshStandardMaterial({
+      color: bodyColor,
+      roughness: 0.38,
+      metalness: 0.35,
+    });
+
+    const darkSteelMat = new THREE.MeshStandardMaterial({
+      color: "#161b22",
+      roughness: 0.5,
+      metalness: 0.8,
+    });
+
+    const silverStripeMat = new THREE.MeshStandardMaterial({
+      color: "#f8f9fa",
+      roughness: 0.25,
+      metalness: 0.9,
+    });
+
+    const windowGlassMat = new THREE.MeshStandardMaterial({
+      color: "#fff3b0",
+      emissive: "#ffd166",
+      emissiveIntensity: 0.65,
+      roughness: 0.2,
+    });
+
+    const headlightMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      emissive: "#ffea00",
+      emissiveIntensity: 2.2,
     });
 
     if (kind === "flat") {
       /*
-       * Обычный прямоугольный поезд.
-       *
-       * На него нужно запрыгнуть.
+       * 1. Основной двухцветный корпус поезда
        */
-      const bodyGeometry = new THREE.BoxGeometry(
-        TRAIN_WIDTH,
-        TRAIN_HEIGHT,
-        TRAIN_LENGTH,
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(TRAIN_WIDTH, TRAIN_HEIGHT, TRAIN_LENGTH),
+        bodyMat,
       );
-
-      const body = new THREE.Mesh(bodyGeometry, material);
-
       body.position.y = TRAIN_HEIGHT / 2;
-
       body.castShadow = true;
       body.receiveShadow = true;
-
       root.add(body);
+
+      /*
+       * 2. Металлические молдинги по бокам поезда
+       */
+      const stripeLeft = new THREE.Mesh(
+        new THREE.BoxGeometry(0.04, 0.22, TRAIN_LENGTH - 0.2),
+        silverStripeMat,
+      );
+      stripeLeft.position.set(-TRAIN_WIDTH / 2 - 0.01, TRAIN_HEIGHT * 0.48, 0);
+      root.add(stripeLeft);
+
+      const stripeRight = new THREE.Mesh(
+        new THREE.BoxGeometry(0.04, 0.22, TRAIN_LENGTH - 0.2),
+        silverStripeMat,
+      );
+      stripeRight.position.set(TRAIN_WIDTH / 2 + 0.01, TRAIN_HEIGHT * 0.48, 0);
+      root.add(stripeRight);
+
+      /*
+       * 3. Светящиеся боковые окна вагона
+       */
+      for (let zIndex = -2.5; zIndex <= 2.5; zIndex += 1.6) {
+        const winL = new THREE.Mesh(
+          new THREE.BoxGeometry(0.04, 0.48, 0.9),
+          windowGlassMat,
+        );
+        winL.position.set(-TRAIN_WIDTH / 2 - 0.01, TRAIN_HEIGHT * 0.68, zIndex);
+        root.add(winL);
+
+        const winR = new THREE.Mesh(
+          new THREE.BoxGeometry(0.04, 0.48, 0.9),
+          windowGlassMat,
+        );
+        winR.position.set(TRAIN_WIDTH / 2 + 0.01, TRAIN_HEIGHT * 0.68, zIndex);
+        root.add(winR);
+      }
+
+      /*
+       * 4. Яркие фары спереди
+       */
+      const lightGeo = new THREE.SphereGeometry(0.11, 12, 12);
+
+      const headLeft = new THREE.Mesh(lightGeo, headlightMat);
+      headLeft.position.set(-TRAIN_WIDTH * 0.32, 0.45, TRAIN_LENGTH / 2 + 0.02);
+      root.add(headLeft);
+
+      const headRight = new THREE.Mesh(lightGeo, headlightMat);
+      headRight.position.set(TRAIN_WIDTH * 0.32, 0.45, TRAIN_LENGTH / 2 + 0.02);
+      root.add(headRight);
+
+      /*
+       * 5. Колесные тележки (подвеска)
+       */
+      for (const zPos of [-TRAIN_LENGTH * 0.32, TRAIN_LENGTH * 0.32]) {
+        const bogey = new THREE.Mesh(
+          new THREE.BoxGeometry(TRAIN_WIDTH * 0.9, 0.25, 1.4),
+          darkSteelMat,
+        );
+        bogey.position.set(0, 0.125, zPos);
+        bogey.castShadow = true;
+        root.add(bogey);
+      }
+
+      /*
+       * 6. Крышевой блок кондиционирования
+       */
+      const vent = new THREE.Mesh(
+        new THREE.BoxGeometry(0.8, 0.1, 1.6),
+        darkSteelMat,
+      );
+      vent.position.set(0, TRAIN_HEIGHT + 0.05, 0);
+      root.add(vent);
     } else {
       /*
-       * Рамповый поезд состоит из:
-       *
-       * 1. Низкого шасси.
-       * 2. Высокого корпуса.
-       * 3. Наклонной поверхности.
+       * Рамповый поезд с наклонным въездом
        */
-
       const chassisHeight = 0.18;
-
-      const chassisGeometry = new THREE.BoxGeometry(
-        TRAIN_WIDTH,
-        chassisHeight,
-        TRAIN_LENGTH,
+      const chassis = new THREE.Mesh(
+        new THREE.BoxGeometry(TRAIN_WIDTH, chassisHeight, TRAIN_LENGTH),
+        darkSteelMat,
       );
-
-      const chassis = new THREE.Mesh(chassisGeometry, material);
-
       chassis.position.y = chassisHeight / 2;
-
       chassis.castShadow = true;
       chassis.receiveShadow = true;
-
       root.add(chassis);
 
-      /*
-       * Корпус занимает заднюю часть поезда.
-       *
-       * Передняя часть отдана под наклонную рампу.
-       */
       const bodyLength = TRAIN_LENGTH - RAMP_LENGTH;
-
-      const bodyGeometry = new THREE.BoxGeometry(
-        TRAIN_WIDTH,
-        TRAIN_HEIGHT,
-        bodyLength,
+      const body = new THREE.Mesh(
+        new THREE.BoxGeometry(TRAIN_WIDTH, TRAIN_HEIGHT, bodyLength),
+        bodyMat,
       );
-
-      const body = new THREE.Mesh(bodyGeometry, material);
-
       body.position.set(0, TRAIN_HEIGHT / 2, -RAMP_LENGTH / 2);
-
       body.castShadow = true;
       body.receiveShadow = true;
-
       root.add(body);
 
-      /*
-       * Реальная длина наклонной поверхности
-       * по теореме Пифагора.
-       */
-      const slopeLength = Math.hypot(RAMP_LENGTH, TRAIN_HEIGHT);
+      // Боковые окна вагона
+      for (let zIndex = -RAMP_LENGTH / 2 - 0.8; zIndex >= -TRAIN_LENGTH / 2 + 0.8; zIndex -= 1.4) {
+        const winL = new THREE.Mesh(
+          new THREE.BoxGeometry(0.04, 0.45, 0.8),
+          windowGlassMat,
+        );
+        winL.position.set(-TRAIN_WIDTH / 2 - 0.01, TRAIN_HEIGHT * 0.68, zIndex);
+        root.add(winL);
 
+        const winR = new THREE.Mesh(
+          new THREE.BoxGeometry(0.04, 0.45, 0.8),
+          windowGlassMat,
+        );
+        winR.position.set(TRAIN_WIDTH / 2 + 0.01, TRAIN_HEIGHT * 0.68, zIndex);
+        root.add(winR);
+      }
+
+      // Наклонная рампа
+      const slopeLength = Math.hypot(RAMP_LENGTH, TRAIN_HEIGHT);
       const slopeAngle = Math.atan2(TRAIN_HEIGHT, RAMP_LENGTH);
 
-      const rampGeometry = new THREE.BoxGeometry(
-        TRAIN_WIDTH,
-        RAMP_THICKNESS,
-        slopeLength,
+      const ramp = new THREE.Mesh(
+        new THREE.BoxGeometry(TRAIN_WIDTH, RAMP_THICKNESS, slopeLength),
+        new THREE.MeshStandardMaterial({
+          color: "#0096c7",
+          roughness: 0.35,
+          metalness: 0.4,
+        }),
       );
-
-      const rampMaterial = new THREE.MeshStandardMaterial({
-        color: "#5d91f0",
-        roughness: 0.42,
-        metalness: 0.2,
-      });
-
-      const ramp = new THREE.Mesh(rampGeometry, rampMaterial);
-
-      /*
-       * Рампа идёт:
-       *
-       * спереди поезда: y = 0
-       * назад к корпусу: y = TRAIN_HEIGHT
-       *
-       * Положительный rotation.x поднимает
-       * отрицательную сторону оси Z.
-       */
       ramp.rotation.x = slopeAngle;
-
       ramp.position.set(
         0,
-
-        /*
-         * Компенсируем толщину BoxGeometry,
-         * чтобы верх рампы начинался примерно от y = 0.
-         */
         TRAIN_HEIGHT / 2 - (RAMP_THICKNESS / 2) * Math.cos(slopeAngle),
-
         TRAIN_LENGTH / 2 - RAMP_LENGTH / 2,
       );
-
       ramp.castShadow = true;
       ramp.receiveShadow = true;
-
       root.add(ramp);
+
+      // Предупредительный желтый порожек у основания рампы
+      const rampBaseStrip = new THREE.Mesh(
+        new THREE.BoxGeometry(TRAIN_WIDTH + 0.04, 0.06, 0.25),
+        new THREE.MeshStandardMaterial({
+          color: "#ffb703",
+          emissive: "#fb8500",
+          emissiveIntensity: 0.6,
+        }),
+      );
+      rampBaseStrip.position.set(0, 0.04, TRAIN_LENGTH / 2 - 0.1);
+      root.add(rampBaseStrip);
     }
 
     const train: TrainActor = {
@@ -1067,12 +1356,6 @@ export class RunnerGame {
       roofPickups: [],
     };
 
-    /*
-     * У обычного поезда монеты лежат на крыше.
-     *
-     * У рампового они создают дорожку:
-     * от нижней части рампы к крыше.
-     */
     const pickupPositions =
       kind === "flat" ? [2.5, 0, -2.5] : [3.25, 2.2, 1.15, 0.1, -2];
 
@@ -1103,39 +1386,105 @@ export class RunnerGame {
     let size: THREE.Vector3;
 
     if (kind === "low") {
-      size = new THREE.Vector3(1.55, 0.8, 0.65);
+      size = new THREE.Vector3(1.55, 0.8, 0.55);
 
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: "#ff8c42",
-        roughness: 0.52,
-      });
-
-      const body = new THREE.Mesh(
-        new THREE.BoxGeometry(size.x, size.y, size.z),
-        bodyMat,
-      );
-      body.castShadow = true;
-      body.receiveShadow = true;
-      root.add(body);
-
+      // Тяжелые металлические ножки-опоры
       const footMat = new THREE.MeshStandardMaterial({
-        color: "#3a2518",
-        roughness: 0.8,
+        color: "#1b263b",
+        roughness: 0.3,
+        metalness: 0.8,
       });
 
-      const footLeft = new THREE.Mesh(
-        new THREE.BoxGeometry(0.2, 0.15, size.z + 0.2),
-        footMat,
-      );
-      footLeft.position.set(-size.x / 2 + 0.1, -size.y / 2 + 0.075, 0);
+      const footGeo = new THREE.BoxGeometry(0.24, 0.18, 0.7);
+      const footLeft = new THREE.Mesh(footGeo, footMat);
+      footLeft.position.set(-size.x / 2 + 0.12, -size.y / 2 + 0.09, 0);
+      footLeft.castShadow = true;
       root.add(footLeft);
 
-      const footRight = new THREE.Mesh(
-        new THREE.BoxGeometry(0.2, 0.15, size.z + 0.2),
-        footMat,
-      );
-      footRight.position.set(size.x / 2 - 0.1, -size.y / 2 + 0.075, 0);
+      const footRight = new THREE.Mesh(footGeo, footMat);
+      footRight.position.set(size.x / 2 - 0.12, -size.y / 2 + 0.09, 0);
+      footRight.castShadow = true;
       root.add(footRight);
+
+      // Вертикальные стойки барьера
+      const postMat = new THREE.MeshStandardMaterial({
+        color: "#2b2d42",
+        roughness: 0.4,
+        metalness: 0.6,
+      });
+
+      const postGeo = new THREE.BoxGeometry(0.12, size.y, 0.18);
+      const postLeft = new THREE.Mesh(postGeo, postMat);
+      postLeft.position.set(-size.x / 2 + 0.12, 0, 0);
+      postLeft.castShadow = true;
+      root.add(postLeft);
+
+      const postRight = new THREE.Mesh(postGeo, postMat);
+      postRight.position.set(size.x / 2 - 0.12, 0, 0);
+      postRight.castShadow = true;
+      root.add(postRight);
+
+      // Светящиеся сигнальные маячки на вершине
+      const beaconMat = new THREE.MeshStandardMaterial({
+        color: "#ff0055",
+        emissive: "#ff0055",
+        emissiveIntensity: 1.8,
+      });
+      const beaconGeo = new THREE.SphereGeometry(0.09, 12, 12);
+
+      const beaconLeft = new THREE.Mesh(beaconGeo, beaconMat);
+      beaconLeft.position.set(-size.x / 2 + 0.12, size.y / 2 + 0.09, 0);
+      root.add(beaconLeft);
+
+      const beaconRight = new THREE.Mesh(beaconGeo, beaconMat);
+      beaconRight.position.set(size.x / 2 - 0.12, size.y / 2 + 0.09, 0);
+      root.add(beaconRight);
+
+      // Основная планка барьера
+      const barMat = new THREE.MeshStandardMaterial({
+        color: "#ffb703",
+        emissive: "#fb8500",
+        emissiveIntensity: 0.4,
+        roughness: 0.4,
+      });
+
+      const bar = new THREE.Mesh(
+        new THREE.BoxGeometry(size.x - 0.1, 0.36, 0.12),
+        barMat,
+      );
+      bar.position.set(0, 0.08, 0);
+      bar.castShadow = true;
+      root.add(bar);
+
+      // Диагональные черные предупредительные полосы
+      const stripeMat = new THREE.MeshStandardMaterial({
+        color: "#1a1a1a",
+        roughness: 0.8,
+      });
+      for (let i = -2; i <= 2; i += 1) {
+        const stripe = new THREE.Mesh(
+          new THREE.BoxGeometry(0.08, 0.38, 0.14),
+          stripeMat,
+        );
+        stripe.position.set(i * 0.26, 0.08, 0);
+        stripe.rotation.z = Math.PI / 6;
+        root.add(stripe);
+      }
+
+      // Нижняя усилительная перекладина
+      const rodMat = new THREE.MeshStandardMaterial({
+        color: "#8d99ae",
+        metalness: 0.85,
+        roughness: 0.3,
+      });
+      const rod = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.035, 0.035, size.x - 0.1, 12),
+        rodMat,
+      );
+      rod.rotation.z = Math.PI / 2;
+      rod.position.set(0, -0.22, 0);
+      rod.castShadow = true;
+      root.add(rod);
     } else {
       /*
        * Высокая арка для подката с полупрозрачной неоновой лазерной сеткой:
@@ -1708,17 +2057,44 @@ export class RunnerGame {
     const height = this.getPlayerHeight();
 
     this.playerMesh.scale.set(PLAYER_WIDTH, height, PLAYER_DEPTH);
-
-    /*
-     * Модель находится внутри группы.
-     * Группа стоит ногами на playerFeetY,
-     * поэтому центр модели поднимается на половину высоты.
-     */
     this.playerMesh.position.y = height / 2;
 
-    this.playerMesh.rotation.x = this.sliding ? -0.18 : 0;
-
     this.playerGroup.position.set(this.playerX, this.playerFeetY, 0);
+
+    // --- ПРОЦЕДУРНАЯ АНИМАЦИЯ БЕГА, ПРЫЖКА И ПОДКАТА ГУМАНОИДА ---
+    if (this.sliding) {
+      // Истинный подкат: корпус отклоняется НАЗАД, а ноги вытягиваются ВПЕРЕД по ходу движения
+      this.humanoidGroup.position.y = -0.55;
+      this.humanoidGroup.rotation.x = -0.75;
+
+      this.leftLegGroup.rotation.x = 1.35;
+      this.rightLegGroup.rotation.x = 1.25;
+
+      this.leftArmGroup.rotation.x = 0.8;
+      this.rightArmGroup.rotation.x = 0.8;
+    } else if (!this.grounded) {
+      // Прыжок: туловище подается вперед, ноги поджимаются, руки разводятся для баланса
+      this.humanoidGroup.position.y = 0;
+      this.humanoidGroup.rotation.x = 0.12;
+
+      this.leftLegGroup.rotation.x = 0.35;
+      this.rightLegGroup.rotation.x = -0.25;
+
+      this.leftArmGroup.rotation.x = -0.6;
+      this.rightArmGroup.rotation.x = -0.6;
+    } else {
+      // Спокойный, плавный бег по земле с естественной низкой частотой маха ног
+      this.humanoidGroup.rotation.x = 0.06;
+
+      const runCycle = this.distance * 2.8;
+      this.humanoidGroup.position.y = Math.abs(Math.sin(runCycle * 2)) * 0.03;
+
+      this.leftArmGroup.rotation.x = Math.sin(runCycle) * 0.45;
+      this.rightArmGroup.rotation.x = -Math.sin(runCycle) * 0.45;
+
+      this.leftLegGroup.rotation.x = -Math.sin(runCycle) * 0.45;
+      this.rightLegGroup.rotation.x = Math.sin(runCycle) * 0.45;
+    }
 
     /*
      * Анимация светящейся ауры силового поля щита
@@ -1902,6 +2278,112 @@ export class RunnerGame {
     });
   }
 
+  private triggerShieldShatterFX(x: number, y: number, z: number): void {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+
+    const particleMat = new THREE.MeshStandardMaterial({
+      color: "#58ef91",
+      emissive: "#00ff88",
+      emissiveIntensity: 2.8,
+      roughness: 0.1,
+      metalness: 0.2,
+    });
+
+    const particles: CoinParticle[] = [];
+    const particleCount = 26;
+
+    for (let i = 0; i < particleCount; i += 1) {
+      const geo = new THREE.IcosahedronGeometry(0.12 + Math.random() * 0.08, 0);
+      const pMesh = new THREE.Mesh(geo, particleMat);
+      group.add(pMesh);
+
+      const theta = Math.random() * Math.PI * 2;
+      const phi = (Math.random() - 0.5) * Math.PI;
+      const speed = 6.0 + Math.random() * 7.0;
+
+      const vx = Math.cos(theta) * Math.cos(phi) * speed;
+      const vy = Math.sin(phi) * speed;
+      const vz = Math.sin(theta) * Math.cos(phi) * speed;
+
+      particles.push({
+        mesh: pMesh,
+        velocity: new THREE.Vector3(vx, vy, vz),
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 16,
+          (Math.random() - 0.5) * 16,
+          (Math.random() - 0.5) * 16,
+        ),
+      });
+    }
+
+    this.scene.add(group);
+    this.coinEffects.push({
+      group,
+      particles,
+      age: 0,
+      maxAge: 0.55,
+    });
+
+    if (window.Telegram?.WebApp?.HapticFeedback) {
+      try {
+        window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
+      } catch (err) {
+        // Fallback
+      }
+    }
+  }
+
+  private triggerObstacleDestroyFX(x: number, y: number, z: number): void {
+    const group = new THREE.Group();
+    group.position.set(x, y, z);
+
+    const colors = ["#ffb703", "#fb8500", "#ff0055", "#1b263b", "#1a1a1a"];
+    const particles: CoinParticle[] = [];
+    const particleCount = 32;
+
+    for (let i = 0; i < particleCount; i += 1) {
+      const col = colors[i % colors.length];
+      const particleMat = new THREE.MeshStandardMaterial({
+        color: col,
+        emissive: col === "#ffb703" || col === "#ff0055" ? col : "#000000",
+        emissiveIntensity: 0.6,
+        roughness: 0.4,
+      });
+
+      const size = 0.1 + Math.random() * 0.18;
+      const geo = new THREE.BoxGeometry(size, size, size);
+      const pMesh = new THREE.Mesh(geo, particleMat);
+      group.add(pMesh);
+
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.5;
+      const speed = 5.0 + Math.random() * 9.0;
+
+      const vx = Math.cos(theta) * Math.cos(phi) * speed;
+      const vy = Math.sin(phi) * speed + 3.0;
+      const vz = Math.sin(theta) * Math.cos(phi) * speed - 2.0;
+
+      particles.push({
+        mesh: pMesh,
+        velocity: new THREE.Vector3(vx, vy, vz),
+        spin: new THREE.Vector3(
+          (Math.random() - 0.5) * 20,
+          (Math.random() - 0.5) * 20,
+          (Math.random() - 0.5) * 20,
+        ),
+      });
+    }
+
+    this.scene.add(group);
+    this.coinEffects.push({
+      group,
+      particles,
+      age: 0,
+      maxAge: 0.65,
+    });
+  }
+
   private updateCoinEffects(delta: number): void {
     for (let i = this.coinEffects.length - 1; i >= 0; i -= 1) {
       const effect = this.coinEffects[i];
@@ -2028,6 +2510,13 @@ export class RunnerGame {
       const survived = this.handleCollision();
 
       if (survived) {
+        this.triggerShieldShatterFX(this.playerX, this.playerFeetY + 0.9, 0);
+        obstacle.mesh.getWorldPosition(this.temporaryWorldPosition);
+        this.triggerObstacleDestroyFX(
+          this.temporaryWorldPosition.x,
+          this.temporaryWorldPosition.y + 0.5,
+          this.temporaryWorldPosition.z,
+        );
         this.respawnObstacle(obstacle);
       }
 
@@ -2063,6 +2552,7 @@ export class RunnerGame {
       const survived = this.handleCollision();
 
       if (survived) {
+        this.triggerShieldShatterFX(this.playerX, this.playerFeetY + 0.9, 0);
         this.respawnTrain(train);
       }
 
