@@ -215,13 +215,47 @@ export class RunnerGame {
     this.isSfxMuted = muted;
   }
 
+  private disposeHierarchy(obj: THREE.Object3D): void {
+    obj.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        const mesh = child as THREE.Mesh;
+        if (mesh.geometry) {
+          mesh.geometry.dispose();
+        }
+        if (mesh.material) {
+          if (Array.isArray(mesh.material)) {
+            mesh.material.forEach((m) => m.dispose());
+          } else {
+            mesh.material.dispose();
+          }
+        }
+      }
+    });
+  }
+
   private playSound(audio: HTMLAudioElement): void {
     if (this.isSfxMuted) return;
     try {
       const clone = audio.cloneNode() as HTMLAudioElement;
       clone.volume = 0.65;
+
+      const cleanup = () => {
+        clone.removeEventListener("ended", cleanup);
+        clone.removeEventListener("error", cleanup);
+        try {
+          clone.pause();
+          clone.removeAttribute("src");
+          clone.load();
+        } catch (e) {
+          // ignore
+        }
+      };
+
+      clone.addEventListener("ended", cleanup);
+      clone.addEventListener("error", cleanup);
+
       clone.play().catch(() => {
-        // Browser autoplay policy fallback
+        cleanup();
       });
     } catch (err) {
       // Fallback
@@ -240,6 +274,7 @@ export class RunnerGame {
       for (let c = tile.children.length - 1; c >= 0; c -= 1) {
         const child = tile.children[c];
         if (child.userData.isScenery) {
+          this.disposeHierarchy(child);
           tile.remove(child);
         }
       }
@@ -251,9 +286,11 @@ export class RunnerGame {
 
   private createSnowSystem(): void {
     if (this.snowGroup) {
+      this.disposeHierarchy(this.snowGroup);
       this.scene.remove(this.snowGroup);
       this.snowGroup = null;
     }
+    this.snowflakes = [];
 
     if (getActiveEnvId() !== "newyear") return;
 
@@ -3088,6 +3125,7 @@ export class RunnerGame {
       const progress = effect.age / effect.maxAge;
 
       if (progress >= 1.0) {
+        this.disposeHierarchy(effect.group);
         this.scene.remove(effect.group);
         this.coinEffects.splice(i, 1);
         continue;
@@ -3570,6 +3608,13 @@ export class RunnerGame {
     this.trackTiles.forEach((tile, index) => {
       tile.position.z = 5 - index * TRACK_TILE_LENGTH;
     });
+
+    // Clear residual particle effects from previous run
+    for (const effect of this.coinEffects) {
+      this.disposeHierarchy(effect.group);
+      this.scene.remove(effect.group);
+    }
+    this.coinEffects.length = 0;
 
     this.resetWorldActors();
     this.updatePlayerVisual();
