@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { InputController } from "./InputController";
 import type { RunnerHud } from "./types";
-import { getActiveSkinId, addWalletCoins, SKINS_CATALOG } from "./shopStorage";
+import { getActiveSkinId, getActiveEnvId, addWalletCoins, SKINS_CATALOG } from "./shopStorage";
 import coinAudioUrl from "../assets/audio/coin.mp3";
 import shieldAudioUrl from "../assets/audio/shield.mp3";
 import magnetAudioUrl from "../assets/audio/magnet.mp3";
@@ -228,6 +228,88 @@ export class RunnerGame {
     }
   }
 
+  private snowGroup: THREE.Group | null = null;
+  private snowflakes: Array<{ mesh: THREE.Mesh; speedY: number; driftX: number }> = [];
+  private ghostMeshes: THREE.Mesh[] = [];
+
+  public updateEnvironmentTheme(): void {
+    this.ghostMeshes = [];
+
+    for (let i = 0; i < this.trackTiles.length; i += 1) {
+      const tile = this.trackTiles[i];
+      for (let c = tile.children.length - 1; c >= 0; c -= 1) {
+        const child = tile.children[c];
+        if (child.userData.isScenery) {
+          tile.remove(child);
+        }
+      }
+      this.populateTileScenery(tile, i);
+    }
+
+    this.createSnowSystem();
+  }
+
+  private createSnowSystem(): void {
+    if (this.snowGroup) {
+      this.scene.remove(this.snowGroup);
+      this.snowGroup = null;
+    }
+
+    if (getActiveEnvId() !== "newyear") return;
+
+    this.snowGroup = new THREE.Group();
+    const snowMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      emissive: "#ffffff",
+      emissiveIntensity: 0.8,
+      roughness: 0.2,
+    });
+
+    const flakeGeo = new THREE.DodecahedronGeometry(0.08, 0);
+    this.snowflakes = [];
+
+    for (let i = 0; i < 120; i += 1) {
+      const flake = new THREE.Mesh(flakeGeo, snowMat);
+      flake.position.set(
+        (Math.random() - 0.5) * 36,
+        Math.random() * 18,
+        (Math.random() - 0.5) * 45 - 5,
+      );
+      this.snowGroup.add(flake);
+      this.snowflakes.push({
+        mesh: flake,
+        speedY: 1.8 + Math.random() * 2.5,
+        driftX: (Math.random() - 0.5) * 0.8,
+      });
+    }
+
+    this.scene.add(this.snowGroup);
+  }
+
+  private updateSnowSystem(delta: number): void {
+    if (!this.snowGroup || getActiveEnvId() !== "newyear") return;
+
+    for (const flake of this.snowflakes) {
+      flake.mesh.position.y -= flake.speedY * delta;
+      flake.mesh.position.x += flake.driftX * delta;
+
+      if (flake.mesh.position.y < 0) {
+        flake.mesh.position.y = 18;
+        flake.mesh.position.x = (Math.random() - 0.5) * 36;
+      }
+    }
+  }
+
+  private updateGhosts(): void {
+    if (getActiveEnvId() !== "halloween" || this.ghostMeshes.length === 0) return;
+    const time = this.clock.getElapsedTime();
+    for (let i = 0; i < this.ghostMeshes.length; i += 1) {
+      const ghost = this.ghostMeshes[i];
+      const baseY = (ghost.userData.baseY as number | undefined) ?? 1.2;
+      ghost.position.y = baseY + Math.sin(time * 2.5 + i) * 0.25;
+    }
+  }
+
   private currentLane: LaneIndex = 1;
 
   private playerX: number = LANE_X[1];
@@ -304,6 +386,7 @@ export class RunnerGame {
     this.playerMesh = this.createPlayer();
 
     this.createWorldActors();
+    this.createSnowSystem();
 
     this.camera.position.set(0, 5.3, 8.5);
 
@@ -589,6 +672,44 @@ export class RunnerGame {
       cone3.castShadow = true;
       cone3.receiveShadow = true;
       group.add(cone3);
+
+      // Новогодние светящиеся шары и золотая звезда на вершине
+      if (getActiveEnvId() === "newyear") {
+        const baubleColors = ["#ff0055", "#ffd700", "#00f5d4", "#ffb703"];
+        for (let b = 0; b < 6; b += 1) {
+          const bCol = baubleColors[b % baubleColors.length];
+          const baubleMat = new THREE.MeshStandardMaterial({
+            color: bCol,
+            emissive: bCol,
+            emissiveIntensity: 1.4,
+            roughness: 0.2,
+          });
+          const bauble = new THREE.Mesh(
+            new THREE.SphereGeometry(0.1, 8, 8),
+            baubleMat,
+          );
+          const angle = (b * Math.PI) / 3;
+          const r = 0.7 - (b % 3) * 0.2;
+          bauble.position.set(
+            Math.cos(angle) * r,
+            1.8 + (b % 3) * 0.6,
+            Math.sin(angle) * r,
+          );
+          group.add(bauble);
+        }
+
+        const starMat = new THREE.MeshStandardMaterial({
+          color: "#ffd700",
+          emissive: "#ffae00",
+          emissiveIntensity: 2.0,
+        });
+        const star = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.18, 0),
+          starMat,
+        );
+        star.position.y = 3.8;
+        group.add(star);
+      }
     } else {
       const trunkGeo = new THREE.CylinderGeometry(0.22, 0.38, 2.0, 8);
       const trunkMat = new THREE.MeshStandardMaterial({
@@ -807,6 +928,506 @@ export class RunnerGame {
     return group;
   }
 
+  private createGiftBox(variantSeed: number): THREE.Group {
+    const group = new THREE.Group();
+    const colors = [
+      "#e63946",
+      "#2a9d8f",
+      "#f4a261",
+      "#7c3aed",
+      "#e07a5f",
+      "#00b4d8",
+      "#ff006e",
+      "#457b9d",
+    ];
+    const boxColor = colors[Math.abs(variantSeed) % colors.length];
+
+    const boxMat = new THREE.MeshStandardMaterial({
+      color: boxColor,
+      roughness: 0.4,
+    });
+
+    const ribbonColors = ["#ffd700", "#ffffff", "#ffae00", "#00f5d4"];
+    const ribbonColor = ribbonColors[Math.abs(variantSeed * 3) % ribbonColors.length];
+
+    const ribbonMat = new THREE.MeshStandardMaterial({
+      color: ribbonColor,
+      emissive: ribbonColor,
+      emissiveIntensity: 0.4,
+      metalness: 0.7,
+      roughness: 0.2,
+    });
+
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.32, 0.38),
+      boxMat,
+    );
+    box.position.y = 0.16;
+    box.castShadow = true;
+    group.add(box);
+
+    const stripe1 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.4, 0.33, 0.08),
+      ribbonMat,
+    );
+    stripe1.position.y = 0.16;
+    group.add(stripe1);
+
+    const stripe2 = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 0.33, 0.4),
+      ribbonMat,
+    );
+    stripe2.position.y = 0.16;
+    group.add(stripe2);
+
+    const bow = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.09, 0),
+      ribbonMat,
+    );
+    bow.position.y = 0.35;
+    group.add(bow);
+
+    return group;
+  }
+
+  private createPumpkin(variantSeed: number): THREE.Group {
+    const group = new THREE.Group();
+
+    const orangeShades = [
+      "#ff6600",
+      "#e65100",
+      "#ff7b00",
+      "#f57c00",
+      "#d84315",
+      "#ff8f00",
+    ];
+    const pumpkinColor = orangeShades[Math.abs(variantSeed) % orangeShades.length];
+
+    const pumpkinMat = new THREE.MeshStandardMaterial({
+      color: pumpkinColor,
+      roughness: 0.5,
+    });
+    const stemMat = new THREE.MeshStandardMaterial({
+      color: "#2d6a4f",
+      roughness: 0.8,
+    });
+    const faceMat = new THREE.MeshStandardMaterial({
+      color: "#ffae00",
+      emissive: "#ff3300",
+      emissiveIntensity: 2.2,
+    });
+
+    const body = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(0.32, 1),
+      pumpkinMat,
+    );
+    body.scale.set(1.1, 0.85, 1.1);
+    body.position.y = 0.22;
+    body.castShadow = true;
+    group.add(body);
+
+    const stem = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.04, 0.06, 0.14, 6),
+      stemMat,
+    );
+    stem.position.set(0, 0.4, 0);
+    stem.rotation.z = (variantSeed % 3) * 0.15 - 0.15;
+    group.add(stem);
+
+    const eyeL = new THREE.Mesh(
+      new THREE.ConeGeometry(0.05, 0.08, 3),
+      faceMat,
+    );
+    eyeL.rotation.x = Math.PI / 2;
+    eyeL.position.set(-0.1, 0.26, 0.28);
+    group.add(eyeL);
+
+    const eyeR = new THREE.Mesh(
+      new THREE.ConeGeometry(0.05, 0.08, 3),
+      faceMat,
+    );
+    eyeR.rotation.x = Math.PI / 2;
+    eyeR.position.set(0.1, 0.26, 0.28);
+    group.add(eyeR);
+
+    const mouth = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.05, 0.04),
+      faceMat,
+    );
+    mouth.position.set(0, 0.16, 0.29);
+    group.add(mouth);
+
+    return group;
+  }
+
+  private createGhost(): THREE.Group {
+    const group = new THREE.Group();
+
+    const ghostMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      emissive: "#e2e8f0",
+      emissiveIntensity: 0.8,
+      transparent: true,
+      opacity: 0.88,
+      roughness: 0.2,
+    });
+    const eyeMat = new THREE.MeshStandardMaterial({
+      color: "#0f172a",
+      roughness: 0.9,
+    });
+
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.24, 12, 12),
+      ghostMat,
+    );
+    head.position.y = 0.75;
+    group.add(head);
+
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.32, 0.45, 12),
+      ghostMat,
+    );
+    body.position.y = 0.48;
+    group.add(body);
+
+    const eyeL = new THREE.Mesh(
+      new THREE.SphereGeometry(0.04, 8, 8),
+      eyeMat,
+    );
+    eyeL.position.set(-0.08, 0.78, 0.21);
+    group.add(eyeL);
+
+    const eyeR = new THREE.Mesh(
+      new THREE.SphereGeometry(0.04, 8, 8),
+      eyeMat,
+    );
+    eyeR.position.set(0.08, 0.78, 0.21);
+    group.add(eyeR);
+
+    return group;
+  }
+
+  private createGravestone(): THREE.Group {
+    const group = new THREE.Group();
+
+    const stoneMat = new THREE.MeshStandardMaterial({
+      color: "#6c757d",
+      roughness: 0.8,
+    });
+    const crossMat = new THREE.MeshStandardMaterial({
+      color: "#343a40",
+      roughness: 0.9,
+    });
+
+    const stone = new THREE.Mesh(
+      new THREE.BoxGeometry(0.38, 0.52, 0.12),
+      stoneMat,
+    );
+    stone.position.y = 0.26;
+    stone.castShadow = true;
+    group.add(stone);
+
+    const crossV = new THREE.Mesh(
+      new THREE.BoxGeometry(0.05, 0.26, 0.04),
+      crossMat,
+    );
+    crossV.position.set(0, 0.3, 0.07);
+    group.add(crossV);
+
+    const crossH = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 0.05, 0.04),
+      crossMat,
+    );
+    crossH.position.set(0, 0.34, 0.07);
+    group.add(crossH);
+
+    return group;
+  }
+
+  private addScenery(tile: THREE.Group, obj: THREE.Object3D): void {
+    obj.userData.isScenery = true;
+    tile.add(obj);
+  }
+
+  private spawnHalloweenScenery(tile: THREE.Group, tileIndex: number): void {
+    const leftPattern = (tileIndex * 3 + 1) % 6;
+    const rightPattern = (tileIndex * 5 + 4) % 6;
+
+    this.spawnPumpkinClusterOnSide(tile, tileIndex, -1, leftPattern);
+    this.spawnPumpkinClusterOnSide(tile, tileIndex, 1, rightPattern);
+
+    if (tileIndex % 3 === 0) {
+      const ghost = this.createGhost();
+      const side = (tileIndex / 3) % 2 === 0 ? -1 : 1;
+      const ghostX = side * (6.5 + (tileIndex % 3) * 0.5);
+      const ghostZ = ((tileIndex * 2) % 7) - 3;
+      ghost.position.set(ghostX, 1.2 + (tileIndex % 2) * 0.4, ghostZ);
+      ghost.userData.baseY = ghost.position.y;
+      this.ghostMeshes.push(ghost as unknown as THREE.Mesh);
+      this.addScenery(tile, ghost);
+    }
+
+    if (tileIndex % 2 === 1) {
+      const gravestone = this.createGravestone();
+      const side = tileIndex % 4 < 2 ? -1 : 1;
+      const stoneX = side * (7.6 + (tileIndex % 2) * 0.6);
+      const stoneZ = ((tileIndex * 4) % 7) - 3;
+      gravestone.position.set(stoneX, 0, stoneZ);
+      gravestone.rotation.y = (tileIndex * 0.7) % 0.8 - 0.4;
+      this.addScenery(tile, gravestone);
+    }
+  }
+
+  private spawnPumpkinClusterOnSide(
+    tile: THREE.Group,
+    tileIndex: number,
+    sideSign: number,
+    pattern: number,
+  ): void {
+    if (pattern === 0) {
+      // STACKED PUMPKINS (2-3 pumpkins, 1 stacked on top)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.2 + (tileIndex % 3) * 0.4);
+      const baseZ = ((tileIndex * 3) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const baseSeed = tileIndex * 7;
+      const baseP = this.createPumpkin(baseSeed);
+      const baseScale = 1.35 + (tileIndex % 3) * 0.15;
+      baseP.scale.set(baseScale, baseScale, baseScale);
+      baseP.rotation.y = (sideSign > 0 ? -Math.PI / 4 : Math.PI / 4) + (tileIndex % 5) * 0.1;
+      clusterGroup.add(baseP);
+
+      const topSeed = baseSeed + 1;
+      const topP = this.createPumpkin(topSeed);
+      const topScale = 0.75 + (tileIndex % 2) * 0.1;
+      topP.scale.set(topScale, topScale, topScale);
+      topP.position.set(0.05 * sideSign, 0.38 * baseScale, 0.02);
+      topP.rotation.z = sideSign * 0.18;
+      topP.rotation.x = -0.12;
+      topP.rotation.y = sideSign > 0 ? -Math.PI / 3 : Math.PI / 3;
+      clusterGroup.add(topP);
+
+      if (tileIndex % 2 === 0) {
+        const miniP = this.createPumpkin(baseSeed + 2);
+        const miniScale = 0.55;
+        miniP.scale.set(miniScale, miniScale, miniScale);
+        miniP.position.set(-0.35 * sideSign, 0, 0.25);
+        miniP.rotation.y = Math.PI / 6;
+        clusterGroup.add(miniP);
+      }
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 1) {
+      // TRIO CLUSTER (3 pumpkins side by side in an arc)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.5 + (tileIndex % 2) * 0.5);
+      const baseZ = ((tileIndex * 5) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 11;
+      const mainP = this.createPumpkin(seed);
+      mainP.scale.set(1.2, 1.2, 1.2);
+      mainP.rotation.y = sideSign > 0 ? -Math.PI / 4 : Math.PI / 4;
+      clusterGroup.add(mainP);
+
+      const p2 = this.createPumpkin(seed + 1);
+      p2.scale.set(0.85, 0.85, 0.85);
+      p2.position.set(-0.38 * sideSign, 0, -0.32);
+      p2.rotation.y = sideSign > 0 ? -Math.PI / 6 : Math.PI / 6;
+      clusterGroup.add(p2);
+
+      const p3 = this.createPumpkin(seed + 2);
+      p3.scale.set(0.65, 0.65, 0.65);
+      p3.position.set(0.35 * sideSign, 0, 0.28);
+      p3.rotation.y = sideSign > 0 ? -Math.PI / 3 : Math.PI / 3;
+      clusterGroup.add(p3);
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 2) {
+      // GIANT SOLO PUMPKIN
+      const giantP = this.createPumpkin(tileIndex * 13);
+      const giantScale = 1.65 + (tileIndex % 3) * 0.15;
+      giantP.scale.set(giantScale, giantScale, giantScale);
+      const posX = sideSign * (6.8 + (tileIndex % 2) * 0.4);
+      const posZ = ((tileIndex * 4) % 7) - 3;
+      giantP.position.set(posX, 0, posZ);
+      giantP.rotation.y = (sideSign > 0 ? -Math.PI / 3 : Math.PI / 3) + (tileIndex % 4) * 0.15;
+      giantP.rotation.z = sideSign * 0.08;
+      this.addScenery(tile, giantP);
+    } else if (pattern === 3) {
+      // PAIR OF PUMPKINS
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.3 + (tileIndex % 3) * 0.3);
+      const baseZ = ((tileIndex * 2) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 17;
+      const p1 = this.createPumpkin(seed);
+      p1.scale.set(1.1, 1.1, 1.1);
+      p1.rotation.y = sideSign > 0 ? -Math.PI / 5 : Math.PI / 5;
+      clusterGroup.add(p1);
+
+      const p2 = this.createPumpkin(seed + 1);
+      p2.scale.set(0.75, 0.75, 0.75);
+      p2.position.set(0.32 * sideSign, 0, 0.22);
+      p2.rotation.y = sideSign > 0 ? -Math.PI / 2.5 : Math.PI / 2.5;
+      clusterGroup.add(p2);
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 4) {
+      // STACKED PAIR (2 pumpkins stacked straight)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.6 + (tileIndex % 2) * 0.5);
+      const baseZ = ((tileIndex * 6) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const baseP = this.createPumpkin(tileIndex * 19);
+      baseP.scale.set(1.25, 1.25, 1.25);
+      baseP.rotation.y = sideSign > 0 ? -Math.PI / 4 : Math.PI / 4;
+      clusterGroup.add(baseP);
+
+      const topP = this.createPumpkin(tileIndex * 19 + 1);
+      topP.scale.set(0.7, 0.7, 0.7);
+      topP.position.set(0, 0.38 * 1.25, 0);
+      topP.rotation.y = sideSign > 0 ? -Math.PI / 2 : Math.PI / 2;
+      topP.rotation.x = 0.1;
+      clusterGroup.add(topP);
+
+      this.addScenery(tile, clusterGroup);
+    }
+  }
+
+  private spawnNewYearScenery(tile: THREE.Group, tileIndex: number): void {
+    const leftPattern = (tileIndex * 4 + 2) % 6;
+    const rightPattern = (tileIndex * 6 + 1) % 6;
+
+    this.spawnGiftClusterOnSide(tile, tileIndex, -1, leftPattern);
+    this.spawnGiftClusterOnSide(tile, tileIndex, 1, rightPattern);
+  }
+
+  private spawnGiftClusterOnSide(
+    tile: THREE.Group,
+    tileIndex: number,
+    sideSign: number,
+    pattern: number,
+  ): void {
+    if (pattern === 0) {
+      // TRIPLE STACK (Tower of 3 presents)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.5 + (tileIndex % 3) * 0.4);
+      const baseZ = ((tileIndex * 3) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 5;
+      const g1 = this.createGiftBox(seed);
+      const s1 = 1.4;
+      g1.scale.set(s1, s1, s1);
+      g1.rotation.y = (tileIndex % 4) * 0.2;
+      clusterGroup.add(g1);
+
+      const g2 = this.createGiftBox(seed + 1);
+      const s2 = 0.95;
+      g2.scale.set(s2, s2, s2);
+      g2.position.set(0, 0.35 * s1, 0);
+      g2.rotation.y = g1.rotation.y + 0.45;
+      clusterGroup.add(g2);
+
+      const g3 = this.createGiftBox(seed + 2);
+      const s3 = 0.6;
+      g3.scale.set(s3, s3, s3);
+      g3.position.set(0, 0.35 * s1 + 0.35 * s2, 0);
+      g3.rotation.y = g2.rotation.y - 0.6;
+      clusterGroup.add(g3);
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 1) {
+      // GIANT PRESENT
+      const giantG = this.createGiftBox(tileIndex * 9);
+      const giantScale = 1.8 + (tileIndex % 3) * 0.2;
+      giantG.scale.set(giantScale, giantScale, giantScale);
+      const posX = sideSign * (6.8 + (tileIndex % 2) * 0.4);
+      const posZ = ((tileIndex * 4) % 7) - 3;
+      giantG.position.set(posX, 0, posZ);
+      giantG.rotation.y = (tileIndex * 0.8) % (Math.PI * 2);
+      this.addScenery(tile, giantG);
+    } else if (pattern === 2) {
+      // HEAP OF GIFTS (4 gifts)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.3 + (tileIndex % 2) * 0.5);
+      const baseZ = ((tileIndex * 5) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 13;
+      const g1 = this.createGiftBox(seed);
+      g1.scale.set(1.2, 1.2, 1.2);
+      g1.rotation.y = (tileIndex % 3) * 0.3;
+      clusterGroup.add(g1);
+
+      const g2 = this.createGiftBox(seed + 1);
+      g2.scale.set(0.75, 0.75, 0.75);
+      g2.position.set(-0.35 * sideSign, 0, -0.28);
+      g2.rotation.y = g1.rotation.y + 0.5;
+      clusterGroup.add(g2);
+
+      const g3 = this.createGiftBox(seed + 2);
+      g3.scale.set(0.65, 0.65, 0.65);
+      g3.position.set(0.32 * sideSign, 0, 0.25);
+      g3.rotation.y = g1.rotation.y - 0.4;
+      clusterGroup.add(g3);
+
+      const g4 = this.createGiftBox(seed + 3);
+      g4.scale.set(0.5, 0.5, 0.5);
+      g4.position.set(0.1 * sideSign, 0, 0.35);
+      g4.rotation.y = g1.rotation.y + 1.2;
+      clusterGroup.add(g4);
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 3) {
+      // DOUBLE STACK (2 gifts stacked)
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.6 + (tileIndex % 3) * 0.3);
+      const baseZ = ((tileIndex * 2) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 17;
+      const g1 = this.createGiftBox(seed);
+      const s1 = 1.3;
+      g1.scale.set(s1, s1, s1);
+      g1.rotation.y = (tileIndex % 5) * 0.25;
+      clusterGroup.add(g1);
+
+      const g2 = this.createGiftBox(seed + 1);
+      const s2 = 0.8;
+      g2.scale.set(s2, s2, s2);
+      g2.position.set(0, 0.35 * s1, 0);
+      g2.rotation.y = g1.rotation.y + 0.6;
+      clusterGroup.add(g2);
+
+      this.addScenery(tile, clusterGroup);
+    } else if (pattern === 4) {
+      // PAIR SIDE-BY-SIDE
+      const clusterGroup = new THREE.Group();
+      const baseX = sideSign * (6.4 + (tileIndex % 2) * 0.4);
+      const baseZ = ((tileIndex * 4) % 7) - 3;
+      clusterGroup.position.set(baseX, 0, baseZ);
+
+      const seed = tileIndex * 19;
+      const g1 = this.createGiftBox(seed);
+      g1.scale.set(1.0, 1.0, 1.0);
+      g1.rotation.y = 0.2;
+      clusterGroup.add(g1);
+
+      const g2 = this.createGiftBox(seed + 1);
+      g2.scale.set(0.75, 0.75, 0.75);
+      g2.position.set(0.3 * sideSign, 0, 0.2);
+      g2.rotation.y = 0.7;
+      clusterGroup.add(g2);
+
+      this.addScenery(tile, clusterGroup);
+    }
+  }
+
   private populateTileScenery(tile: THREE.Group, tileIndex: number): void {
     const leftVariant = tileIndex;
     const rightVariant = tileIndex + 7;
@@ -816,45 +1437,45 @@ export class RunnerGame {
       const house = this.createHouse(leftVariant);
       house.position.set(-11.8, 0, -1.5);
       house.rotation.y = Math.PI / 2 + 0.1;
-      tile.add(house);
+      this.addScenery(tile, house);
 
       const tree = this.createTree(leftVariant);
       tree.position.set(-9.2, 0, 3.2);
-      tile.add(tree);
+      this.addScenery(tile, tree);
 
       const bush = this.createBush(leftVariant);
       bush.position.set(-7.2, 0, -1.0);
-      tile.add(bush);
+      this.addScenery(tile, bush);
     } else if (tileIndex % 3 === 1) {
       const tree1 = this.createTree(leftVariant);
       tree1.position.set(-9.0, 0, -2.8);
-      tile.add(tree1);
+      this.addScenery(tile, tree1);
 
       const tree2 = this.createTree(leftVariant + 1);
       tree2.position.set(-12.5, 0, 2.2);
-      tile.add(tree2);
+      this.addScenery(tile, tree2);
 
       const lamp = this.createStreetLamp();
       lamp.position.set(-6.6, 0, 0);
       lamp.rotation.y = Math.PI / 2;
-      tile.add(lamp);
+      this.addScenery(tile, lamp);
 
       const bush = this.createBush(leftVariant + 2);
       bush.position.set(-8.0, 0, 3.5);
-      tile.add(bush);
+      this.addScenery(tile, bush);
     } else {
       const house = this.createHouse(leftVariant + 3);
       house.position.set(-12.5, 0, 2.0);
       house.rotation.y = Math.PI / 2 - 0.15;
-      tile.add(house);
+      this.addScenery(tile, house);
 
       const tree1 = this.createTree(leftVariant + 2);
       tree1.position.set(-8.8, 0, -3.2);
-      tile.add(tree1);
+      this.addScenery(tile, tree1);
 
       const tree2 = this.createTree(leftVariant + 4);
       tree2.position.set(-14.2, 0, -1.2);
-      tile.add(tree2);
+      this.addScenery(tile, tree2);
     }
 
     // --- RIGHT SIDE SCENERY ---
@@ -862,45 +1483,54 @@ export class RunnerGame {
       const house = this.createHouse(rightVariant);
       house.position.set(11.8, 0, 1.5);
       house.rotation.y = -Math.PI / 2 - 0.1;
-      tile.add(house);
+      this.addScenery(tile, house);
 
       const tree1 = this.createTree(rightVariant + 1);
       tree1.position.set(9.2, 0, -2.5);
-      tile.add(tree1);
+      this.addScenery(tile, tree1);
 
       const tree2 = this.createTree(rightVariant + 2);
       tree2.position.set(13.8, 0, 3.8);
-      tile.add(tree2);
+      this.addScenery(tile, tree2);
     } else if ((tileIndex + 1) % 3 === 1) {
       const tree1 = this.createTree(rightVariant);
       tree1.position.set(10.0, 0, 2.2);
-      tile.add(tree1);
+      this.addScenery(tile, tree1);
 
       const tree2 = this.createTree(rightVariant + 1);
       tree2.position.set(13.0, 0, -2.2);
-      tile.add(tree2);
+      this.addScenery(tile, tree2);
 
       const lamp = this.createStreetLamp();
       lamp.position.set(6.6, 0, 0);
       lamp.rotation.y = -Math.PI / 2;
-      tile.add(lamp);
+      this.addScenery(tile, lamp);
 
       const bush = this.createBush(rightVariant + 3);
       bush.position.set(7.5, 0, -3.0);
-      tile.add(bush);
+      this.addScenery(tile, bush);
     } else {
       const house = this.createHouse(rightVariant + 2);
       house.position.set(12.5, 0, -2.0);
       house.rotation.y = -Math.PI / 2 + 0.12;
-      tile.add(house);
+      this.addScenery(tile, house);
 
       const tree1 = this.createTree(rightVariant + 3);
       tree1.position.set(9.0, 0, 2.6);
-      tile.add(tree1);
+      this.addScenery(tile, tree1);
 
       const bush = this.createBush(rightVariant + 4);
       bush.position.set(7.2, 0, 0.8);
-      tile.add(bush);
+      this.addScenery(tile, bush);
+    }
+
+    // --- THEMATIC DECORATIVE PROPS ---
+    const envId = getActiveEnvId();
+
+    if (envId === "newyear") {
+      this.spawnNewYearScenery(tile, tileIndex);
+    } else if (envId === "halloween") {
+      this.spawnHalloweenScenery(tile, tileIndex);
     }
   }
 
@@ -1813,6 +2443,8 @@ export class RunnerGame {
     this.updateWorld(delta);
     this.updateVerticalPhysics(delta);
     this.updatePlayerVisual(delta);
+    this.updateSnowSystem(delta);
+    this.updateGhosts();
 
     this.updatePlayerBox();
     this.checkPickups();

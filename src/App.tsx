@@ -10,11 +10,16 @@ import {
 } from "./game/leaderboard";
 import {
   SKINS_CATALOG,
+  ENV_CATALOG,
   getWalletCoins,
   getUnlockedSkins,
   getActiveSkinId,
   unlockSkin,
   setActiveSkinId,
+  getUnlockedEnvs,
+  getActiveEnvId,
+  unlockEnv,
+  setActiveEnvId,
 } from "./game/shopStorage";
 import type { RunnerGame } from "./game/RunnerGame";
 import musicAudioUrl from "./assets/audio/music.mp3";
@@ -33,8 +38,12 @@ export default function App() {
   const [highScore, setHighScore] = useState<number>(0);
 
   const [walletCoins, setWalletCoins] = useState<number>(0);
+  const [activeShopTab, setActiveShopTab] = useState<"skins" | "envs">("skins");
   const [unlockedSkins, setUnlockedSkins] = useState<string[]>([]);
   const [activeSkinId, setActiveSkinIdState] = useState<string>("default");
+
+  const [unlockedEnvs, setUnlockedEnvs] = useState<string[]>([]);
+  const [activeEnvId, setActiveEnvIdState] = useState<string>("default");
 
   const [playerName, setPlayerName] = useState<string>("Бегун");
   const [scoreSaved, setScoreSaved] = useState<boolean>(false);
@@ -162,6 +171,8 @@ export default function App() {
     setWalletCoins(getWalletCoins());
     setUnlockedSkins(getUnlockedSkins());
     setActiveSkinIdState(getActiveSkinId());
+    setUnlockedEnvs(getUnlockedEnvs());
+    setActiveEnvIdState(getActiveEnvId());
     setViewMode("shop");
   };
 
@@ -188,6 +199,32 @@ export default function App() {
     setActiveSkinIdState(skinId);
     if (gameRef.current) {
       gameRef.current.updatePlayerSkin();
+    }
+  };
+
+  const handleBuyEnv = (envId: string) => {
+    if (unlockEnv(envId)) {
+      setWalletCoins(getWalletCoins());
+      setUnlockedEnvs(getUnlockedEnvs());
+      setActiveEnvIdState(getActiveEnvId());
+      if (gameRef.current) {
+        gameRef.current.updateEnvironmentTheme();
+      }
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        try {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
+        } catch (err) {
+          // Ignore
+        }
+      }
+    }
+  };
+
+  const handleEquipEnv = (envId: string) => {
+    setActiveEnvId(envId);
+    setActiveEnvIdState(envId);
+    if (gameRef.current) {
+      gameRef.current.updateEnvironmentTheme();
     }
   };
 
@@ -322,70 +359,129 @@ export default function App() {
         <section className="overlay-menu">
           <div className="menu-card menu-card--wide">
             <div className="menu-header">
-              <h2>🛒 Магазин Скинов</h2>
+              <h2>🛒 Магазин</h2>
               <div className="wallet-badge">
                 🪙 Баланс: <strong>{walletCoins.toLocaleString()} монет</strong>
               </div>
             </div>
 
-            <div className="skins-grid">
-              {SKINS_CATALOG.map((skin) => {
-                const isUnlocked = unlockedSkins.includes(skin.id);
-                const isActive = activeSkinId === skin.id;
-                const canAfford = walletCoins >= skin.price;
-
-                return (
-                  <div
-                    key={skin.id}
-                    className={`skin-card ${isActive ? "skin-card--active" : ""}`}
-                  >
-                    <div className="skin-card__icon">{skin.icon}</div>
-                    <div className="skin-card__title">{skin.name}</div>
-                    <div className="skin-card__palette">
-                      <span
-                        className="color-dot"
-                        style={{ backgroundColor: skin.hoodieColor }}
-                        title="Куртка"
-                      />
-                      <span
-                        className="color-dot"
-                        style={{ backgroundColor: skin.pantsColor }}
-                        title="Штаны"
-                      />
-                      <span
-                        className="color-dot"
-                        style={{ backgroundColor: skin.visorColor }}
-                        title="Визор"
-                      />
-                    </div>
-                    <p className="skin-card__desc">{skin.description}</p>
-
-                    <div className="skin-card__action">
-                      {isActive ? (
-                        <button className="btn btn--disabled" disabled>
-                          ✓ Выбран
-                        </button>
-                      ) : isUnlocked ? (
-                        <button
-                          className="btn btn--primary"
-                          onClick={() => handleEquipSkin(skin.id)}
-                        >
-                          Надеть
-                        </button>
-                      ) : (
-                        <button
-                          className={`btn ${canAfford ? "btn--success" : "btn--disabled"}`}
-                          disabled={!canAfford}
-                          onClick={() => handleBuySkin(skin.id)}
-                        >
-                          {canAfford ? `Купить (🪙 ${skin.price})` : `🪙 ${skin.price}`}
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="shop-tabs">
+              <button
+                className={`shop-tab ${activeShopTab === "skins" ? "shop-tab--active" : ""}`}
+                onClick={() => setActiveShopTab("skins")}
+              >
+                👕 Скины Персонажа
+              </button>
+              <button
+                className={`shop-tab ${activeShopTab === "envs" ? "shop-tab--active" : ""}`}
+                onClick={() => setActiveShopTab("envs")}
+              >
+                🏞️ Темы Окружения
+              </button>
             </div>
+
+            {activeShopTab === "skins" ? (
+              <div className="skins-grid">
+                {SKINS_CATALOG.map((skin) => {
+                  const isUnlocked = unlockedSkins.includes(skin.id);
+                  const isActive = activeSkinId === skin.id;
+                  const canAfford = walletCoins >= skin.price;
+
+                  return (
+                    <div
+                      key={skin.id}
+                      className={`skin-card ${isActive ? "skin-card--active" : ""}`}
+                    >
+                      <div className="skin-card__icon">{skin.icon}</div>
+                      <div className="skin-card__title">{skin.name}</div>
+                      <div className="skin-card__palette">
+                        <span
+                          className="color-dot"
+                          style={{ backgroundColor: skin.hoodieColor }}
+                          title="Куртка"
+                        />
+                        <span
+                          className="color-dot"
+                          style={{ backgroundColor: skin.pantsColor }}
+                          title="Штаны"
+                        />
+                        <span
+                          className="color-dot"
+                          style={{ backgroundColor: skin.visorColor }}
+                          title="Визор"
+                        />
+                      </div>
+                      <p className="skin-card__desc">{skin.description}</p>
+
+                      <div className="skin-card__action">
+                        {isActive ? (
+                          <button className="btn btn--disabled" disabled>
+                            ✓ Выбран
+                          </button>
+                        ) : isUnlocked ? (
+                          <button
+                            className="btn btn--primary"
+                            onClick={() => handleEquipSkin(skin.id)}
+                          >
+                            Надеть
+                          </button>
+                        ) : (
+                          <button
+                            className={`btn ${canAfford ? "btn--success" : "btn--disabled"}`}
+                            disabled={!canAfford}
+                            onClick={() => handleBuySkin(skin.id)}
+                          >
+                            {canAfford ? `Купить (🪙 ${skin.price})` : `🪙 ${skin.price}`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="skins-grid">
+                {ENV_CATALOG.map((env) => {
+                  const isUnlocked = unlockedEnvs.includes(env.id);
+                  const isActive = activeEnvId === env.id;
+                  const canAfford = walletCoins >= env.price;
+
+                  return (
+                    <div
+                      key={env.id}
+                      className={`skin-card ${isActive ? "skin-card--active" : ""}`}
+                    >
+                      <div className="skin-card__icon">{env.icon}</div>
+                      <div className="skin-card__title">{env.name}</div>
+                      <p className="skin-card__desc">{env.description}</p>
+
+                      <div className="skin-card__action">
+                        {isActive ? (
+                          <button className="btn btn--disabled" disabled>
+                            ✓ Включена
+                          </button>
+                        ) : isUnlocked ? (
+                          <button
+                            className="btn btn--primary"
+                            onClick={() => handleEquipEnv(env.id)}
+                          >
+                            Активировать
+                          </button>
+                        ) : (
+                          <button
+                            className={`btn ${canAfford ? "btn--success" : "btn--disabled"}`}
+                            disabled={!canAfford}
+                            onClick={() => handleBuyEnv(env.id)}
+                          >
+                            {canAfford ? `Купить (🪙 ${env.price})` : `🪙 ${env.price}`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
 
             <div className="menu-actions" style={{ marginTop: "20px" }}>
               <button
