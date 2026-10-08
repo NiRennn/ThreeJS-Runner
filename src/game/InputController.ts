@@ -144,6 +144,12 @@ export class InputController {
    */
 
   private readonly handleTouchStart = (event: TouchEvent): void => {
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest(".overlay-menu, .audio-controls, button, input, select, table")) {
+      this.isSwiping = false;
+      return;
+    }
+
     if (event.touches.length !== 1) return;
 
     const touch = event.touches[0];
@@ -154,6 +160,11 @@ export class InputController {
 
   private readonly handleTouchMove = (event: TouchEvent): void => {
     if (!this.isSwiping) return;
+
+    const target = event.target as HTMLElement | null;
+    if (target && target.closest(".overlay-menu, .audio-controls, button, input, select, table")) {
+      return;
+    }
 
     // Предотвращаем стандартный скролл страницы на телефоне во время игры
     if (event.cancelable) {

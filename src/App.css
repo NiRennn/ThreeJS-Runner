@@ -426,6 +426,9 @@
   margin-bottom: 20px;
   max-height: 420px;
   overflow-y: auto;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   padding-right: 4px;
 }
 

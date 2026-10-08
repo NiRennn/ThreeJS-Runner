@@ -1176,6 +1176,16 @@ export class RunnerGame {
       "ramp",
       "flat",
       "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
+      "flat",
+      "ramp",
     ];
 
     trainKinds.forEach((kind) => {
@@ -2701,7 +2711,7 @@ export class RunnerGame {
   }
 
   private respawnTrain(train: TrainActor): void {
-    train.isMoving = Math.random() < 0.35;
+    train.isMoving = false;
     let attempts = 0;
     let selectedLane = randomLane();
     let candidateZ = this.spawnCursorZ;
@@ -2710,7 +2720,7 @@ export class RunnerGame {
     while (attempts < 20 && !valid) {
       attempts += 1;
       selectedLane = randomLane();
-      candidateZ = this.spawnCursorZ - THREE.MathUtils.randFloat(9.0, 15.0);
+      candidateZ = this.spawnCursorZ - THREE.MathUtils.randFloat(5.5, 9.5);
       valid = true;
 
       const laneX = LANE_X[selectedLane];
