@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { InputController } from "./InputController";
 import type { RunnerHud } from "./types";
+import { getActiveSkinId, addWalletCoins, SKINS_CATALOG } from "./shopStorage";
 import coinAudioUrl from "../assets/audio/coin.mp3";
 import shieldAudioUrl from "../assets/audio/shield.mp3";
 import magnetAudioUrl from "../assets/audio/magnet.mp3";
@@ -23,21 +24,10 @@ type TrainKind = "flat" | "ramp";
 
 interface TrainActor {
   kind: TrainKind;
-
-  /*
-   * Внутри root находятся:
-   * - корпус;
-   * - наклонная поверхность;
-   * - монеты.
-   */
   root: THREE.Group;
-
-  /*
-   * Общий опасный объём поезда.
-   */
   box: THREE.Box3;
-
   roofPickups: PickupActor[];
+  isMoving?: boolean;
 }
 
 interface ObstacleActor {
@@ -189,6 +179,34 @@ export class RunnerGame {
   private readonly pickups: PickupActor[] = [];
 
   private readonly coinEffects: CoinEffect[] = [];
+
+  private hoodieMat!: THREE.MeshStandardMaterial;
+  private pantsMat!: THREE.MeshStandardMaterial;
+  private visorMat!: THREE.MeshStandardMaterial;
+  private backpackMat!: THREE.MeshStandardMaterial;
+
+  public updatePlayerSkin(): void {
+    const skinId = getActiveSkinId();
+    const skin = SKINS_CATALOG.find((s) => s.id === skinId) || SKINS_CATALOG[0];
+
+    if (this.hoodieMat) {
+      this.hoodieMat.color.set(skin.hoodieColor);
+    }
+    if (this.pantsMat) {
+      this.pantsMat.color.set(skin.pantsColor);
+    }
+    if (this.visorMat) {
+      this.visorMat.color.set(skin.visorColor);
+      this.visorMat.emissive.set(skin.visorColor);
+    }
+    if (this.backpackMat) {
+      this.backpackMat.color.set(skin.backpackColor);
+    }
+  }
+
+  public getCurrentWorldSpeed(): number {
+    return WORLD_SPEED + Math.min(12.0, (this.distance / 450) * 1.5);
+  }
 
   private isGameActive = false;
   private isSfxMuted = false;
@@ -889,6 +907,8 @@ export class RunnerGame {
   private createPlayer(): THREE.Mesh {
     this.humanoidGroup = new THREE.Group();
 
+    const activeSkin = SKINS_CATALOG.find((s) => s.id === getActiveSkinId()) || SKINS_CATALOG[0];
+
     const skinMat = new THREE.MeshStandardMaterial({
       color: "#ffdbac",
       roughness: 0.6,
@@ -899,15 +919,15 @@ export class RunnerGame {
       roughness: 0.7,
     });
 
-    const visorMat = new THREE.MeshStandardMaterial({
-      color: "#00f5d4",
-      emissive: "#00f5d4",
+    this.visorMat = new THREE.MeshStandardMaterial({
+      color: activeSkin.visorColor,
+      emissive: activeSkin.visorColor,
       emissiveIntensity: 1.2,
       roughness: 0.1,
     });
 
-    const hoodieMat = new THREE.MeshStandardMaterial({
-      color: "#ff5722",
+    this.hoodieMat = new THREE.MeshStandardMaterial({
+      color: activeSkin.hoodieColor,
       roughness: 0.45,
       metalness: 0.1,
     });
@@ -918,8 +938,8 @@ export class RunnerGame {
       roughness: 0.2,
     });
 
-    const pantsMat = new THREE.MeshStandardMaterial({
-      color: "#1b263b",
+    this.pantsMat = new THREE.MeshStandardMaterial({
+      color: activeSkin.pantsColor,
       roughness: 0.5,
     });
 
@@ -933,8 +953,8 @@ export class RunnerGame {
       roughness: 0.4,
     });
 
-    const backpackMat = new THREE.MeshStandardMaterial({
-      color: "#0d1b2a",
+    this.backpackMat = new THREE.MeshStandardMaterial({
+      color: activeSkin.backpackColor,
       roughness: 0.4,
       metalness: 0.6,
     });
@@ -947,7 +967,7 @@ export class RunnerGame {
     // --- ТОРС И КУРТКА-ХУДИ ---
     const torsoMesh = new THREE.Mesh(
       new THREE.BoxGeometry(0.52, 0.62, 0.32),
-      hoodieMat,
+      this.hoodieMat,
     );
     torsoMesh.position.y = 1.15;
     torsoMesh.castShadow = true;
@@ -962,7 +982,7 @@ export class RunnerGame {
 
     const backpack = new THREE.Mesh(
       new THREE.BoxGeometry(0.36, 0.42, 0.18),
-      backpackMat,
+      this.backpackMat,
     );
     backpack.position.set(0, 1.18, -0.21);
     backpack.castShadow = true;
@@ -1004,7 +1024,7 @@ export class RunnerGame {
 
     const visor = new THREE.Mesh(
       new THREE.BoxGeometry(0.38, 0.09, 0.08),
-      visorMat,
+      this.visorMat,
     );
     visor.position.set(0, 1.63, 0.15);
     this.humanoidGroup.add(visor);
@@ -1015,7 +1035,7 @@ export class RunnerGame {
 
     const leftSleeve = new THREE.Mesh(
       new THREE.BoxGeometry(0.14, 0.44, 0.14),
-      hoodieMat,
+      this.hoodieMat,
     );
     leftSleeve.position.y = -0.22;
     leftSleeve.castShadow = true;
@@ -1035,7 +1055,7 @@ export class RunnerGame {
 
     const rightSleeve = new THREE.Mesh(
       new THREE.BoxGeometry(0.14, 0.44, 0.14),
-      hoodieMat,
+      this.hoodieMat,
     );
     rightSleeve.position.y = -0.22;
     rightSleeve.castShadow = true;
@@ -1056,7 +1076,7 @@ export class RunnerGame {
 
     const leftPant = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.62, 0.18),
-      pantsMat,
+      this.pantsMat,
     );
     leftPant.position.y = -0.31;
     leftPant.castShadow = true;
@@ -1084,7 +1104,7 @@ export class RunnerGame {
 
     const rightPant = new THREE.Mesh(
       new THREE.BoxGeometry(0.18, 0.62, 0.18),
-      pantsMat,
+      this.pantsMat,
     );
     rightPant.position.y = -0.31;
     rightPant.castShadow = true;
@@ -1776,7 +1796,8 @@ export class RunnerGame {
 
     this.magnetRemaining = Math.max(0, this.magnetRemaining - delta);
 
-    this.distance += WORLD_SPEED * delta;
+    const currentSpeed = this.getCurrentWorldSpeed();
+    this.distance += currentSpeed * delta;
 
     this.updateControls(delta);
     this.updateWorld(delta);
@@ -2165,14 +2186,16 @@ export class RunnerGame {
    */
 
   private updateWorld(delta: number): void {
-    const movement = WORLD_SPEED * delta;
+    const currentSpeed = this.getCurrentWorldSpeed();
+    const movement = currentSpeed * delta;
 
     this.spawnCursorZ += movement;
 
     this.updateTrack(movement);
 
     for (const train of this.trains) {
-      train.root.position.z += movement;
+      const extraSpeed = train.isMoving ? 7.0 : 0;
+      train.root.position.z += (currentSpeed + extraSpeed) * delta;
 
       if (train.root.position.z > RECYCLE_Z) {
         this.respawnTrain(train);
@@ -2489,6 +2512,7 @@ export class RunnerGame {
   private collectPickup(pickup: PickupActor): void {
     if (pickup.kind === "coin") {
       this.coins += 1;
+      addWalletCoins(1);
       this.playSound(coinAudio);
 
       pickup.mesh.getWorldPosition(this.temporaryWorldPosition);
@@ -2677,6 +2701,7 @@ export class RunnerGame {
   }
 
   private respawnTrain(train: TrainActor): void {
+    train.isMoving = Math.random() < 0.35;
     let attempts = 0;
     let selectedLane = randomLane();
     let candidateZ = this.spawnCursorZ;

@@ -8,6 +8,14 @@ import {
   saveScore,
   type LeaderboardEntry,
 } from "./game/leaderboard";
+import {
+  SKINS_CATALOG,
+  getWalletCoins,
+  getUnlockedSkins,
+  getActiveSkinId,
+  unlockSkin,
+  setActiveSkinId,
+} from "./game/shopStorage";
 import type { RunnerGame } from "./game/RunnerGame";
 import musicAudioUrl from "./assets/audio/music.mp3";
 import "./App.css";
@@ -16,13 +24,17 @@ const bgMusic = new Audio(musicAudioUrl);
 bgMusic.loop = true;
 bgMusic.volume = 0.35;
 
-type ViewMode = "menu" | "playing" | "leaderboard" | "gameover";
+type ViewMode = "menu" | "playing" | "leaderboard" | "gameover" | "shop";
 
 export default function App() {
   const [hud, setHud] = useState<RunnerHud>(INITIAL_RUNNER_HUD);
   const [viewMode, setViewMode] = useState<ViewMode>("menu");
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [highScore, setHighScore] = useState<number>(0);
+
+  const [walletCoins, setWalletCoins] = useState<number>(0);
+  const [unlockedSkins, setUnlockedSkins] = useState<string[]>([]);
+  const [activeSkinId, setActiveSkinIdState] = useState<string>("default");
 
   const [playerName, setPlayerName] = useState<string>("Бегун");
   const [scoreSaved, setScoreSaved] = useState<boolean>(false);
@@ -145,6 +157,40 @@ export default function App() {
     setViewMode("leaderboard");
   };
 
+  const handleOpenShop = () => {
+    tryPlayMusic();
+    setWalletCoins(getWalletCoins());
+    setUnlockedSkins(getUnlockedSkins());
+    setActiveSkinIdState(getActiveSkinId());
+    setViewMode("shop");
+  };
+
+  const handleBuySkin = (skinId: string) => {
+    if (unlockSkin(skinId)) {
+      setWalletCoins(getWalletCoins());
+      setUnlockedSkins(getUnlockedSkins());
+      setActiveSkinIdState(getActiveSkinId());
+      if (gameRef.current) {
+        gameRef.current.updatePlayerSkin();
+      }
+      if (window.Telegram?.WebApp?.HapticFeedback) {
+        try {
+          window.Telegram.WebApp.HapticFeedback.notificationOccurred("success");
+        } catch (err) {
+          // Ignore
+        }
+      }
+    }
+  };
+
+  const handleEquipSkin = (skinId: string) => {
+    setActiveSkinId(skinId);
+    setActiveSkinIdState(skinId);
+    if (gameRef.current) {
+      gameRef.current.updatePlayerSkin();
+    }
+  };
+
   const handleBackToMenu = () => {
     setHighScore(getHighScore());
     if (gameRef.current) {
@@ -254,10 +300,99 @@ export default function App() {
               </button>
 
               <button
+                className="btn btn--accent btn--large"
+                onClick={handleOpenShop}
+              >
+                🛒 Магазин скинов
+              </button>
+
+              <button
                 className="btn btn--secondary btn--large"
                 onClick={handleOpenLeaderboard}
               >
                 🏆 Таблица лидеров
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* SHOP OVERLAY */}
+      {viewMode === "shop" && (
+        <section className="overlay-menu">
+          <div className="menu-card menu-card--wide">
+            <div className="menu-header">
+              <h2>🛒 Магазин Скинов</h2>
+              <div className="wallet-badge">
+                🪙 Баланс: <strong>{walletCoins.toLocaleString()} монет</strong>
+              </div>
+            </div>
+
+            <div className="skins-grid">
+              {SKINS_CATALOG.map((skin) => {
+                const isUnlocked = unlockedSkins.includes(skin.id);
+                const isActive = activeSkinId === skin.id;
+                const canAfford = walletCoins >= skin.price;
+
+                return (
+                  <div
+                    key={skin.id}
+                    className={`skin-card ${isActive ? "skin-card--active" : ""}`}
+                  >
+                    <div className="skin-card__icon">{skin.icon}</div>
+                    <div className="skin-card__title">{skin.name}</div>
+                    <div className="skin-card__palette">
+                      <span
+                        className="color-dot"
+                        style={{ backgroundColor: skin.hoodieColor }}
+                        title="Куртка"
+                      />
+                      <span
+                        className="color-dot"
+                        style={{ backgroundColor: skin.pantsColor }}
+                        title="Штаны"
+                      />
+                      <span
+                        className="color-dot"
+                        style={{ backgroundColor: skin.visorColor }}
+                        title="Визор"
+                      />
+                    </div>
+                    <p className="skin-card__desc">{skin.description}</p>
+
+                    <div className="skin-card__action">
+                      {isActive ? (
+                        <button className="btn btn--disabled" disabled>
+                          ✓ Выбран
+                        </button>
+                      ) : isUnlocked ? (
+                        <button
+                          className="btn btn--primary"
+                          onClick={() => handleEquipSkin(skin.id)}
+                        >
+                          Надеть
+                        </button>
+                      ) : (
+                        <button
+                          className={`btn ${canAfford ? "btn--success" : "btn--disabled"}`}
+                          disabled={!canAfford}
+                          onClick={() => handleBuySkin(skin.id)}
+                        >
+                          {canAfford ? `Купить (🪙 ${skin.price})` : `🪙 ${skin.price}`}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="menu-actions" style={{ marginTop: "20px" }}>
+              <button
+                className="btn btn--secondary btn--large"
+                onClick={handleBackToMenu}
+              >
+                ◀ Назад в меню
               </button>
             </div>
           </div>
