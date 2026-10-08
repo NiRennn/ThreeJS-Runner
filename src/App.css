@@ -44,6 +44,45 @@
   z-index: 10;
 }
 
+/* Music & SFX Mute/Unmute Toggle Controls */
+.audio-controls {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  display: flex;
+  gap: 10px;
+  z-index: 1000;
+}
+
+.audio-toggle-btn {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  color: #ffffff;
+  background: rgba(6, 13, 27, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 16px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(16px);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  outline: none;
+}
+
+.audio-toggle-btn:hover {
+  transform: scale(1.08);
+  background: rgba(13, 24, 46, 0.9);
+  border-color: #4ca6ff;
+  box-shadow: 0 0 16px rgba(76, 166, 255, 0.4);
+}
+
+.audio-toggle-btn:active {
+  transform: scale(0.95);
+}
+
 .hud__score {
   margin-bottom: 8px;
   color: #ffffff;
@@ -476,6 +515,19 @@
     left: 12px;
     min-width: 140px;
     padding: 10px 14px;
+  }
+
+  .audio-controls {
+    top: 12px;
+    right: 12px;
+    gap: 8px;
+  }
+
+  .audio-toggle-btn {
+    width: 40px;
+    height: 40px;
+    font-size: 17px;
+    border-radius: 14px;
   }
 
   .hud__score {

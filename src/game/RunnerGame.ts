@@ -1,6 +1,17 @@
 import * as THREE from "three";
 import { InputController } from "./InputController";
 import type { RunnerHud } from "./types";
+import coinAudioUrl from "../assets/audio/coin.mp3";
+import shieldAudioUrl from "../assets/audio/shield.mp3";
+import magnetAudioUrl from "../assets/audio/magnet.mp3";
+import destroyAudioUrl from "../assets/audio/destroy.mp3";
+import failAudioUrl from "../assets/audio/fail.mp3";
+
+const coinAudio = new Audio(coinAudioUrl);
+const shieldAudio = new Audio(shieldAudioUrl);
+const magnetAudio = new Audio(magnetAudioUrl);
+const destroyAudio = new Audio(destroyAudioUrl);
+const failAudio = new Audio(failAudioUrl);
 
 type LaneIndex = 0 | 1 | 2;
 
@@ -180,6 +191,24 @@ export class RunnerGame {
   private readonly coinEffects: CoinEffect[] = [];
 
   private isGameActive = false;
+  private isSfxMuted = false;
+
+  public setSfxMuted(muted: boolean): void {
+    this.isSfxMuted = muted;
+  }
+
+  private playSound(audio: HTMLAudioElement): void {
+    if (this.isSfxMuted) return;
+    try {
+      const clone = audio.cloneNode() as HTMLAudioElement;
+      clone.volume = 0.65;
+      clone.play().catch(() => {
+        // Browser autoplay policy fallback
+      });
+    } catch (err) {
+      // Fallback
+    }
+  }
 
   private currentLane: LaneIndex = 1;
 
@@ -2325,6 +2354,8 @@ export class RunnerGame {
       maxAge: 0.55,
     });
 
+    this.playSound(destroyAudio);
+
     if (window.Telegram?.WebApp?.HapticFeedback) {
       try {
         window.Telegram.WebApp.HapticFeedback.notificationOccurred("warning");
@@ -2458,6 +2489,7 @@ export class RunnerGame {
   private collectPickup(pickup: PickupActor): void {
     if (pickup.kind === "coin") {
       this.coins += 1;
+      this.playSound(coinAudio);
 
       pickup.mesh.getWorldPosition(this.temporaryWorldPosition);
       this.triggerCoinPickupFX(
@@ -2469,10 +2501,12 @@ export class RunnerGame {
 
     if (pickup.kind === "magnet") {
       this.magnetRemaining = 6;
+      this.playSound(magnetAudio);
     }
 
     if (pickup.kind === "shield") {
       this.shieldActive = true;
+      this.playSound(shieldAudio);
     }
 
     pickup.mesh.visible = false;
@@ -2571,6 +2605,7 @@ export class RunnerGame {
     }
 
     this.gameOver = true;
+    this.playSound(failAudio);
     this.emitHud(true);
 
     return false;

@@ -9,7 +9,12 @@ import {
   type LeaderboardEntry,
 } from "./game/leaderboard";
 import type { RunnerGame } from "./game/RunnerGame";
+import musicAudioUrl from "./assets/audio/music.mp3";
 import "./App.css";
+
+const bgMusic = new Audio(musicAudioUrl);
+bgMusic.loop = true;
+bgMusic.volume = 0.35;
 
 type ViewMode = "menu" | "playing" | "leaderboard" | "gameover";
 
@@ -23,7 +28,46 @@ export default function App() {
   const [scoreSaved, setScoreSaved] = useState<boolean>(false);
   const [isNewRecord, setIsNewRecord] = useState<boolean>(false);
 
+  const [isMuted, setIsMuted] = useState<boolean>(() => {
+    return localStorage.getItem("three_runner_music_muted") === "true";
+  });
+
+  const [isSfxMuted, setIsSfxMuted] = useState<boolean>(() => {
+    return localStorage.getItem("three_runner_sfx_muted") === "true";
+  });
+
   const gameRef = useRef<RunnerGame | null>(null);
+
+  const tryPlayMusic = useCallback(() => {
+    const muted = localStorage.getItem("three_runner_music_muted") === "true";
+    bgMusic.muted = muted;
+    if (!muted && bgMusic.paused) {
+      bgMusic.play().catch(() => {});
+    }
+  }, []);
+
+  const toggleMusic = () => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      localStorage.setItem("three_runner_music_muted", String(next));
+      bgMusic.muted = next;
+      if (!next && bgMusic.paused) {
+        bgMusic.play().catch(() => {});
+      }
+      return next;
+    });
+  };
+
+  const toggleSfx = () => {
+    setIsSfxMuted((prev) => {
+      const next = !prev;
+      localStorage.setItem("three_runner_sfx_muted", String(next));
+      if (gameRef.current) {
+        gameRef.current.setSfxMuted(next);
+      }
+      return next;
+    });
+  };
 
   // Initialize Telegram WebApp SDK & load leaderboard
   useEffect(() => {
@@ -51,6 +95,7 @@ export default function App() {
 
   const handleGameInit = useCallback((game: RunnerGame) => {
     gameRef.current = game;
+    game.setSfxMuted(localStorage.getItem("three_runner_sfx_muted") === "true");
   }, []);
 
   const handleHudChange = useCallback(
@@ -85,6 +130,7 @@ export default function App() {
   );
 
   const handleStartGame = () => {
+    tryPlayMusic();
     setViewMode("playing");
     setScoreSaved(false);
     setIsNewRecord(false);
@@ -94,6 +140,7 @@ export default function App() {
   };
 
   const handleOpenLeaderboard = () => {
+    tryPlayMusic();
     setLeaderboard(getLeaderboard());
     setViewMode("leaderboard");
   };
@@ -156,6 +203,27 @@ export default function App() {
           </div>
         </section>
       )}
+
+      {/* AUDIO CONTROLS (MUSIC & SFX) */}
+      <div className="audio-controls">
+        <button
+          className="audio-toggle-btn"
+          onClick={toggleMusic}
+          title={isMuted ? "Включить музыку" : "Выключить музыку"}
+          aria-label="Переключить музыку"
+        >
+          {isMuted ? "🔇" : "🎵"}
+        </button>
+
+        <button
+          className="audio-toggle-btn"
+          onClick={toggleSfx}
+          title={isSfxMuted ? "Включить звуковые эффекты" : "Выключить звуковые эффекты"}
+          aria-label="Переключить звуковые эффекты"
+        >
+          {isSfxMuted ? "🔕" : "🔔"}
+        </button>
+      </div>
 
       {/* CONTROLS HINT (Mobile Swipes & Keyboard) */}
       <section className="controls">
