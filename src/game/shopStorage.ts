@@ -64,9 +64,13 @@ const ACTIVE_SKIN_KEY = "three_runner_active_skin_v1";
 export function getWalletCoins(): number {
   try {
     const val = localStorage.getItem(WALLET_KEY);
-    return val ? parseInt(val, 10) : 0;
+    if (val === null) {
+      localStorage.setItem(WALLET_KEY, "1000");
+      return 1000;
+    }
+    return parseInt(val, 10);
   } catch (err) {
-    return 0;
+    return 1000;
   }
 }
 
